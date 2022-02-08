@@ -147,6 +147,8 @@ namespace Fluid
 		};
 		std::array<std::array<BoundaryType,2>, D> boundaryTypes;
 
+		vec<D> externalAcceleration;
+
 		using srn = typename decltype(kdt)::search_result_neigh;
 		using srv = typename decltype(kdt)::search_result_vneigh;
 		using srm = typename decltype(kdt)::search_result_mass;
@@ -154,26 +156,25 @@ namespace Fluid
 
 		double get_h(double nu)
 		{
+			// Returns the kernel size for this timestep
 			AutoTimer at(g_timer, "get_h");
 
-			std::vector<double> minDists;
+			double avg = 0;
 
+			#pragma omp parallel for reduction(+:avg)
 			for (int i = 0; i < particles.size(); i++)
 			{
 				const auto& p1 = particles[i];
 				double md = 9999;
-				for (int j = 0; j < particles.size(); j++)
+				for (int j = 0; j < particles.size(); j++) // TODO use the neighbours instead of quadratic
 				{
 					const auto& p2 = particles[j];
 					if (j != i)
 						md = std::min(md, (p1.pos - p2.pos).length());
 				}
-				minDists.push_back(md);
+				avg += md;
 			}
-			double avg = 0;
-			for (auto a : minDists)
-				avg += a;
-			return nu * avg / minDists.size();
+			return nu * avg / particles.size();
 		}
 
 		double get_viscPi(double c_i, double c_j, double rho_i, double rho_j, vec<D> v_ij, vec<D> r_ij_norm)
@@ -216,6 +217,8 @@ namespace Fluid
 			std::array<int, D> mirrored;
 
 			rebuildTree();
+
+			#pragma omp parallel for 
 			for (int i = 0; i < particles.size(); i++)
 			{
 				int counter;
@@ -227,7 +230,7 @@ namespace Fluid
 				for (int k = 0; k < D; k++)
 				{
 					if (boundaryTypes[k][0] == periodic) {
-						AutoTimer at(g_timer, "findNeighbours - periodic");
+						//AutoTimer at(g_timer, "findNeighbours - periodic");
 
 						if (domain[k][1] - particles[i].pos[k] < r)
 						{
@@ -486,7 +489,7 @@ namespace Fluid
 					AutoTimer at(g_timer, "simulate - apply change");
 					for (auto& p1 : particles)
 					{
-						p1.accel.x += dt * 10.1;
+						p1.accel += externalAcceleration * dt;
 
 
 						if (!ISOTHERMAL)
@@ -566,6 +569,8 @@ namespace Fluid
 
 			sph.domain = { { { 0,1 },{0,1} } };
 			sph.boundaryTypes = { { {SPH_t::periodic,SPH_t::periodic},{SPH_t::wall,SPH_t::wall} } };
+
+			sph.externalAcceleration = { 50,0 };
 
 			for (int i = 0; i < numParticles; i++)
 			{
