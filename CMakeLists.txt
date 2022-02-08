@@ -1,14 +1,21 @@
 ﻿# CMakeList.txt: CMake-Projekt für "ShapeOptimizer". Schließen Sie die Quelle ein, und definieren Sie
 # projektspezifische Logik hier.
 #
-cmake_minimum_required (VERSION 3.8)
-set(CMAKE_CXX_STANDARD 20)
-
-project ("ShapeOptimizer")
+cmake_minimum_required (VERSION 3.9)
+project (ShapeOptimizer LANGUAGES CXX)
 
 
+# Create the target
+add_executable (ShapeOptimizer "main.cpp" "hydro/utils.h"  "ShapeOptimizer.h" "hydro/integrate.h")
 
-# Fügen Sie der ausführbaren Datei dieses Projekts eine Quelle hinzu.
-add_executable (ShapeOptimizer "main.cpp" "ShapeOptimizer.h")
+set_property(TARGET ShapeOptimizer PROPERTY CXX_STANDARD 20)
 
-# TODO: Fügen Sie bei Bedarf Tests hinzu, und installieren Sie Ziele.
+
+find_package(OpenMP REQUIRED)
+if(OpenMP_CXX_FOUND)
+    message("OpenMP was found!")
+    target_link_libraries(ShapeOptimizer PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+
+

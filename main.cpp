@@ -107,8 +107,8 @@ public:
 		}
 		return vol;
 	}
-	float getEnergy() {
-		return generateBoundary().getDistance() / getVolume()*(1+abs(getVolume()-100)*0.01);
+	float getEnergy() { // The quantity to minimize
+		return getVolume()/generateBoundary().getDistance() *(1+abs(getVolume()-100)*0.01);
 	}
 
 	void optimize(int nIterations, float temperature, optimizationInfo& out_info) {
@@ -146,19 +146,21 @@ public:
 	}
 };
 
+#include "hydro/sph.h"
+
 int main(){
 	scene sc;
 	sc.init(20, 20);
 	std::ofstream file;
 
-	optimizationInfo oi;
+	/*optimizationInfo oi;
 	sc.optimize(20000, 0.0001, oi);
 
 	file.open("output-info.txt");
 	file << oi;
 	file.close();
 
-
+	
 	file.open("output-raw.txt");
 	file << sc;
 	file.close();
@@ -168,8 +170,27 @@ int main(){
 
 	file.open("output-boundary.txt");
 	file << b;
-	file.close();
+	file.close();*/
 
+	std::cout << "Number of omp threads: " << omp_get_max_threads() << std::endl;
 	
+	srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+	srand(57);
+
+	Fluid::SPH<2> sph(1.4, 5.0, 16);
+
+	Fluid::TestCase<2> tc;
+	tc.initRandom(sph, 500);
+
+	sph.simulate<false, true, true>("glass2d.binary", 5, 1.0, 0.5, 0.01);
+
+	sph.getTree().toFile("kdtree.binary");
+	std::cout << "tree written to file" << std::endl;
+
+	g_timer.print();
+	std::cin.get();
+
 	return 0;
 }
+
+
