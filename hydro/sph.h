@@ -227,11 +227,8 @@ namespace Fluid
 				
 				
 				neigs_mirror[i].clear();
-				for (int k = 0; k < D; k++)
-				{
+				for (int k = 0; k < D; k++) {
 					if (boundaryTypes[k][0] == periodic) {
-						//AutoTimer at(g_timer, "findNeighbours - periodic");
-
 						if (domain[k][1] - particles[i].pos[k] < r)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] -= domainSpan[k];
@@ -272,12 +269,33 @@ namespace Fluid
 									break;
 								}
 						}
-						else
-							mirrored[k] = 0;
+						else mirrored[k] = 0;
+					}
+					else mirrored[k] = 0;
+
+					// For wall boundaries we let each particle see its phantom mirrored version
+					if (boundaryTypes[k][1] == wall) {
+						if (domain[k][1] - particles[i].pos[k] < r)
+						{
+							vec<D> vpos = particles[i].pos; vpos[k] = 2*domain[k][1] - vpos[k];
+							
+							auto conn = vpos - particles[i].pos;
+							double dist = conn.length();
+							neigs_mirror[i].push_back(srv{ &particles[i],conn,dist });
+						}
+					}
+					if (boundaryTypes[k][0] == wall) {
+						if (particles[i].pos[k] - domain[k][0] < r)
+						{
+							vec<D> vpos = particles[i].pos; vpos[k] = 2 * domain[k][0] - vpos[k];
+
+							auto conn = vpos - particles[i].pos;
+							double dist = conn.length();
+							neigs_mirror[i].push_back(srv{ &particles[i],conn,dist });
+						}
 					}
 				}
 				
-
 				if (_enable_grav_)
 				{
 					masses[i].clear();
@@ -559,7 +577,7 @@ namespace Fluid
 	{
 		using SPH_t = typename SPH<2>;
 	public:	
-		void initRandom(SPH_t& sph, int numParticles)
+		void initWindchannel(SPH_t& sph, int numParticles)
 		{
 			sph.particles.clear();
 			sph.particles.resize(numParticles);

@@ -180,7 +180,7 @@ int main(){
 	Fluid::SPH<2> sph(1.4, 5.0, 16); // dry air, 0 degree Celsius, normal pressure
 
 	Fluid::TestCase<2> tc;
-	tc.initRandom(sph, 500);
+	tc.initWindchannel(sph, 500);
 
 	sph.checkConsistency();
 	sph.simulate<false, true>("glass2d.binary", 5, 1.0, 0.5, 0.01);
