@@ -96,7 +96,8 @@ namespace Fluid
 		const double G = 8 * 2;
 		const double alpha; // volume viscosity
 		const double beta;  // other viscosity
-		vec<D> domain0, domain1;
+		std::array<vec<2>, D> domain;
+		std::array<double, D> domainSpan;
 
 		m4spline<D> kernel = m4spline<D>();
 
@@ -137,6 +138,14 @@ namespace Fluid
 
 		std::vector<particle> particles;
 		KDTree<D, particle> kdt;
+
+		enum BoundaryType
+		{
+			outflow,
+			periodic,
+			wall
+		};
+		std::array<std::array<BoundaryType,2>, D> boundaryTypes;
 
 		using srn = typename decltype(kdt)::search_result_neigh;
 		using srv = typename decltype(kdt)::search_result_vneigh;
@@ -196,7 +205,7 @@ namespace Fluid
 		}
 
 		void findNeighbours(const double h, const double grav_angle,
-			const bool _enable_grav_, const bool _periodic_,
+			const bool _enable_grav_,
 			std::vector<std::vector<srn>>& neigs,
 			std::vector<std::vector<srv>>& neigs_mirror,
 			std::vector<std::vector<srm>>& masses)
@@ -212,57 +221,59 @@ namespace Fluid
 				int counter;
 				neigs[i].clear();
 				kdt.searchRadius(particles[i].pos, r, neigs[i], counter);
-
-				if (_periodic_)
+				
+				
+				neigs_mirror[i].clear();
+				for (int k = 0; k < D; k++)
 				{
-					neigs_mirror[i].clear();
-					for (int k = 0; k < D; k++)
-					{
-						double domainSpan = domain1[k] - domain0[k];
-						if (domain1[k] - particles[i].pos[k] < r)
+					if (boundaryTypes[k][0] == periodic) {
+						AutoTimer at(g_timer, "findNeighbours - periodic");
+
+						if (domain[k][1] - particles[i].pos[k] < r)
 						{
-							vec<D> vpos = particles[i].pos; vpos[k] -= domainSpan;
+							vec<D> vpos = particles[i].pos; vpos[k] -= domainSpan[k];
 							kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 							mirrored[k] = 1;
 
 							for (int kk = 0; kk < k; kk++)
 								if (mirrored[kk] == 1)
 								{
-									vpos[kk] -= domainSpan;
+									vpos[kk] -= domainSpan[k];
 									kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 									break;
 								}
-								else if(mirrored[kk] == -1)
+								else if (mirrored[kk] == -1)
 								{
-									vpos[kk] += domainSpan;
+									vpos[kk] += domainSpan[k];
 									kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 									break;
 								}
 						}
-						else if (particles[i].pos[k] - domain0[k] < r)
+						else if (particles[i].pos[k] - domain[k][0] < r)
 						{
-							vec<D> vpos = particles[i].pos; vpos[k] += domainSpan;
+							vec<D> vpos = particles[i].pos; vpos[k] += domainSpan[k];
 							kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 							mirrored[k] = -1;
 
 							for (int kk = 0; kk < k; kk++)
 								if (mirrored[kk] == 1)
 								{
-									vpos[kk] -= domainSpan;
+									vpos[kk] -= domainSpan[k];
 									kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 									break;
 								}
 								else if (mirrored[kk] == -1)
 								{
-									vpos[kk] += domainSpan;
+									vpos[kk] += domainSpan[k];
 									kdt.searchRadius(vpos, r, neigs_mirror[i], counter);
 									break;
 								}
 						}
 						else
-							mirrored[k] = 0;			
+							mirrored[k] = 0;
 					}
 				}
+				
 
 				if (_enable_grav_)
 				{
@@ -339,7 +350,21 @@ namespace Fluid
 			kdt.setLeafSize(leafCapacity); // number of particles per kd-tree leaf
 		}
 
-		template<bool GRAVITATION = false, bool ISOTHERMAL = false, bool PERIODIC = false>
+		void checkConsistency() {
+			bool problemFound = false;
+			for (int d = 0; d < D; ++d)
+				domainSpan[d] = domain[d][1] - domain[d][0];
+			for(int d = 0;d<D;++d)
+				if ((boundaryTypes[d][0] == periodic) != ((boundaryTypes[d][1] == periodic))) {
+					std::cout << "WARNING: Dimension " << d << ": opposite sides must both have periodic boundary conditions.";
+					problemFound = true;
+				}
+			if (!problemFound)
+				std::cout << "Consistency check passed!" << std::endl;
+		}
+
+
+		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
 		void simulate(std::string m_filename, const double simulTime, const double eta, const double cfl = 1., const double logTimeStep = 0.01)
 		{
 			using namespace std;
@@ -361,7 +386,7 @@ namespace Fluid
 			std::vector<std::vector<srm>> masses(particles.size());
 
 			h = get_h(eta);
-			findNeighbours(h, grav_angle, GRAVITATION, PERIODIC, neigs, neigs_mirror, masses);
+			findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
 			computeDensity(h, neigs, neigs_mirror, ISOTHERMAL);
 			logParticles(fw, t);
 
@@ -376,8 +401,8 @@ namespace Fluid
 
 				h = get_h(eta);
 				
-				// find neighbors
-				findNeighbours(h, grav_angle, GRAVITATION, PERIODIC, neigs, neigs_mirror, masses);
+				// find neighbours
+				findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
 
 				// compute density and pressure
 				computeDensity(h, neigs, neigs_mirror, ISOTHERMAL);
@@ -413,24 +438,21 @@ namespace Fluid
 							delV_acc += vij.dot(rijn) * (p2.mass / p2.density * kernel.der(dist, h));
 							visc_acc += rijn * p2.mass * kernel.der(dist, h) * -get_viscPi(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
 						};
-						if (PERIODIC)
+						for (auto p2p : neigs_mirror[i])
 						{
-							for (auto p2p : neigs_mirror[i])
-							{
-								const particle& p2 = *p2p.neigh;
+							const particle& p2 = *p2p.neigh;
 
-								auto rij = p2p.relPos * (-1);
-								auto vij = (p1.vel - p2.vel);
-								double dist = rij.length();
-								auto rijn = dist == 0 ? rij : rij * (1 / dist);
-								accel_acc += rijn * (-p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kernel.der(dist, h));
-								lambda = get_viscLambda(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
-								inte_acc += vij.dot(rijn) * p2.mass * kernel.der(dist, h);
-								inte_acc_visc += rijn.dot(rijn) * lambda * p2.mass * kernel.der(dist, h);
-								delV_acc += vij.dot(rijn) * (p2.mass / p2.density * kernel.der(dist, h));
-								visc_acc += rijn * p2.mass * kernel.der(dist, h) * -get_viscPi(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
-							};
-						}
+							auto rij = p2p.relPos * (-1);
+							auto vij = (p1.vel - p2.vel);
+							double dist = rij.length();
+							auto rijn = dist == 0 ? rij : rij * (1 / dist);
+							accel_acc += rijn * (-p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kernel.der(dist, h));
+							lambda = get_viscLambda(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+							inte_acc += vij.dot(rijn) * p2.mass * kernel.der(dist, h);
+							inte_acc_visc += rijn.dot(rijn) * lambda * p2.mass * kernel.der(dist, h);
+							delV_acc += vij.dot(rijn) * (p2.mass / p2.density * kernel.der(dist, h));
+							visc_acc += rijn * p2.mass * kernel.der(dist, h) * -get_viscPi(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+						};
 						if (GRAVITATION)
 						{
 							for (const srm& cm : masses[i])
@@ -473,15 +495,26 @@ namespace Fluid
 						p1.vel += p1.accel * dt;
 
 
-						if (PERIODIC)
-						{
-							for (int k = 0; k < D; k++)
-							{
-								while (p1.pos[k] > domain1[k]) {
-									p1.pos[k] -= (domain1[k] - domain0[k]);
+						// apply boundary conditions
+						for (int k = 0; k < D; k++) {
+							if(boundaryTypes[k][0] == periodic){
+								while (p1.pos[k] < domain[k][0])
+									p1.pos[k] += domainSpan[k]; 
+								while (p1.pos[k] > domain[k][1])
+									p1.pos[k] -= domainSpan[k];
+								continue;
+							}
+							if (boundaryTypes[k][0] == wall) {
+								if (p1.pos[k] < domain[k][0]) {
+									p1.pos[k] = domain[k][0];
+									p1.vel[k] *= -1;
 								}
-								while (p1.pos[k] < domain0[k])
-									p1.pos[k] += (domain1[k] - domain0[k]);
+							}
+							if (boundaryTypes[k][1] == wall) {
+								if (p1.pos[k] > domain[k][1]) {
+									p1.pos[k] = domain[k][1];
+									p1.vel[k] *= -1;
+								}
 							}
 						}
 					}
@@ -507,7 +540,7 @@ namespace Fluid
 			auto endTime = chrono::high_resolution_clock::now();
 			cout << "Simulation finished. Timesteps: " << counter << ", Duration: " << chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count() << " ms" << std::endl;
 
-			std::cout << "Average neighbor search took: " << neighbourTime / counter << " mus" << std::endl;
+			std::cout << "Average neighbour search took: " << neighbourTime / counter << " mus" << std::endl;
 
 			cout << "Writing to file... ";
 			fw.close();
@@ -531,21 +564,16 @@ namespace Fluid
 			sph.kdt.setPositionCB(&SPH_t::particle::getPos);
 			sph.kdt.setMassCB(&SPH_t::particle::getMass);
 
-			sph.domain0 = { 0,0 };
-			sph.domain1 = { 1,1 };
+			sph.domain = { { { 0,1 },{0,1} } };
+			sph.boundaryTypes = { { {SPH_t::periodic,SPH_t::periodic},{SPH_t::wall,SPH_t::wall} } };
 
-			//vec<2> preset[5] = { {0.038, 0.8522}, {0.0844, 0.8803}, {0.1393, 0.7813}, {0.3547,  0.6225}, {0.6736, 0.5177} };
 			for (int i = 0; i < numParticles; i++)
 			{
 				auto x = ((rand() % 10000) / 10000.0);
 				auto y = ((rand() % 10000) / 10000.0);
 				sph.particles[i] = { { x, y },{ 0, 0 },{ 0, 0 }, 1.0 / numParticles, 0, 0, 1, 0 };
-				//sph.particles[i].pos = preset[i];
 			}
 		}
 
 	};
-
-	//const double gamma = 1.4; // dry air, 0 degree Celsius, normal pressure
-
 }

@@ -177,12 +177,13 @@ int main(){
 	srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
 	srand(57);
 
-	Fluid::SPH<2> sph(1.4, 5.0, 16);
+	Fluid::SPH<2> sph(1.4, 5.0, 16); // dry air, 0 degree Celsius, normal pressure
 
 	Fluid::TestCase<2> tc;
 	tc.initRandom(sph, 500);
 
-	sph.simulate<false, true, true>("glass2d.binary", 5, 1.0, 0.5, 0.01);
+	sph.checkConsistency();
+	sph.simulate<false, true>("glass2d.binary", 5, 1.0, 0.5, 0.01);
 
 	sph.getTree().toFile("kdtree.binary");
 	std::cout << "tree written to file" << std::endl;

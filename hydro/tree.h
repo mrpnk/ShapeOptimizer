@@ -550,8 +550,6 @@ public:
 
 	void searchRadius(vec<D> pos, double rad, std::vector<search_result_neigh>& result, int& counter) const
 	{
-		AutoTimer at(g_timer, "searchRadius - neigh");
-
 		if(data.empty())
 		{
 			if(pos[axis] - rad < sep)
@@ -572,8 +570,6 @@ public:
 	}
 	void searchRadius(vec<D> pos, double rad, std::vector<search_result_vneigh>& result, int& counter) const
 	{
-		AutoTimer at(g_timer, "searchRadius - vneigh");
-
 		if (data.empty())
 		{
 			if (pos[axis] - rad < sep)
