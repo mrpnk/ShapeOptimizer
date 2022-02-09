@@ -85,7 +85,7 @@ namespace Fluid
 	};
 
 	template<int D>
-	struct fileDat {
+	struct fileParticleData {
 		vec<D> pos;
 		vec<D> vel;
 		double dens;
@@ -99,7 +99,21 @@ namespace Fluid
 			return { D + D + 1 + 1 + 3 + 2 };
 		}
 	};
+	template<int D>
+	struct fileSolidData {
+		vec<D> com;
+		vec<D> vel;
+		double angle;
+		double omega;
+		vec<D> dragForce;
+		double group;
+
+		static inline size_t numElements() {
+			return { D + D + 2 + D + 1};
+		}
+	};
 	
+
 	template<int D>
 	class SPH
 	{
@@ -135,7 +149,7 @@ namespace Fluid
 			int	   id; // inside their group
 
 			template<bool ISOTHERMAL>
-			double get_c(double gamma) const
+			inline double get_c(double gamma) const
 			{
 				if (ISOTHERMAL)
 					return sqrt(energy);
@@ -143,7 +157,7 @@ namespace Fluid
 					return sqrt(gamma*(gamma - 1)*energy);
 			}
 			template<bool ISOTHERMAL>
-			double get_dt(double gamma, double h, double alpha, double beta) const
+			inline double get_dt(double gamma, double h, double alpha, double beta) const
 			{
 				double c = get_c<ISOTHERMAL>(gamma);
 				double t1 = h / (h*delVabs + c);
@@ -165,6 +179,12 @@ namespace Fluid
 			double omega; // angular velocity
 			double momentOfInertia;
 
+			int group;
+			vec<2> dragForce;
+
+			bool positionLocked = false;
+			bool rotationLocked = false;
+			
 			std::vector<particle*> particles; // temporarily pointing inside SPH::particles
 			std::vector<vec<2>> subpositions; // not nessecariy in the same order as "particles"
 		};
@@ -206,26 +226,20 @@ namespace Fluid
 			return nu * avg / particles.size();
 		}
 
-		double get_viscPi(double c_i, double c_j, double rho_i, double rho_j, vec<D> v_ij, vec<D> r_ij_norm)
+		void get_viscPiLambda(double& out_Pi, double& out_lambda,
+			double c_i, double c_j, double rho_i, double rho_j, vec<D> v_ij, vec<D> e_ij)
 		{
-			auto dot = v_ij.dot(r_ij_norm);
+			auto dot = v_ij.dot(e_ij);
 			if (dot <= 0)
 			{
 				auto vSig = c_i + c_j - beta * dot;
-				return -alpha * vSig*dot * 2 / ((rho_i + rho_j));
+				auto temp = -alpha * vSig * dot / (rho_i + rho_j);
+				out_Pi = temp * 2;
+				out_lambda = temp * dot;
 			}
-			return 0;
+			else out_Pi = out_lambda = 0;
 		}
-		double get_viscLambda(double c_i, double c_j, double rho_i, double rho_j, vec<D> v_ij, vec<D> r_ij_norm)
-		{
-			auto dot = v_ij.dot(r_ij_norm);
-			if (dot <= 0)
-			{
-				auto vSig = c_i + c_j - beta * dot;
-				return -alpha * vSig*dot*dot / (rho_i + rho_j);
-			}
-			return 0;
-		}
+	
 
 		void rebuildTree()
 		{
@@ -375,10 +389,10 @@ namespace Fluid
 					{auto dist = (r.com - pos).length(); return dist > 0.0001 ? l + r.mass / dist : l; });
 			};	
 
-			std::vector<fileDat<D>> data(particles.size());		
+			std::vector<fileParticleData<D>> data(particles.size());
 			std::transform(particles.begin(), particles.end(), data.begin(), [&grav_pot](const particle& p)
 				{
-					return fileDat{ p.pos, p.vel, p.density, p.pressure,
+					return fileParticleData{ p.pos, p.vel, p.density, p.pressure,
 						p.energy * p.mass, p.vel.lengthsq() * (0.5 * p.mass), 0/*grav_pot(p.pos) * p.mass*/ ,
 						(double)p.group, (double)p.id};
 				});
@@ -386,6 +400,22 @@ namespace Fluid
 			fw.newLayer();
 			fw.writeData(data);
 			fw.writeHeader(time, 0);	
+		}
+
+		void logSolids(CubeFileWriter& fw, double time)
+		{
+			AutoTimer at(g_timer, "logSolids");
+
+			std::vector<fileSolidData<D>> data(solids.size());
+			std::transform(solids.begin(), solids.end(), data.begin(), [](const solid& so)
+				{
+					return fileSolidData{ so.com, so.vel, so.angle, so.omega,
+						so.dragForce, (double)so.group };
+				});
+
+			fw.newLayer();
+			fw.writeData(data);
+			fw.writeHeader(time, 0);
 		}
 
 	public:
@@ -437,16 +467,18 @@ namespace Fluid
 		}
 		void createSolid() {
 			solid so;
-			so.totalMass = 1;
-			vec<2> ori = { 0.5,0.5 };
+			so.totalMass = .1;
+			int gr = solids.size()+1;
+			so.group = gr;
 
-			so.subpositions = { {1,-2}, {0,-1}, {0,0}, {0,1}, {-1,2} };
+			vec<2> ori = { 0.5,0.5 };
+			so.subpositions = { {-1.5,-2.5}, {-0.5,-1.8}, {0,-1}, {0,0}, {0,1}, {-0.5,1.8}, {-1.5,2.5} };
 			size_t offset = particles.size();
 			particles.resize(offset + so.subpositions.size());
 			for (int i = 0; i < so.subpositions.size(); i++) {
 				particles[offset + i] = { ori +(so.subpositions[i]*0.05),{ 0, 0 },{ 0, 0 },
 					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
-				particles[offset + i].group = 1;
+				particles[offset + i].group = gr;
 				particles[offset + i].id = i;
 				so.particles.push_back(&particles[offset + i]);
 			}
@@ -466,27 +498,31 @@ namespace Fluid
 				so.subpositions[i] = so.particles[i]->pos - so.com;
 			}
 
+			// only rotate around COM, dont move
+			so.positionLocked = true;
+			so.rotationLocked = true;
 
 			solids.push_back(so);
 		};
 
 
+		auto& getTree() { return kdt; }
+
+		size_t getNumParticles() { return particles.size(); }
+		size_t getNumSolids() { return solids.size(); }
+
 		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
-		void simulate(std::string m_filename, const double simulTime, const double eta, const double cfl = 1., const double logTimeStep = 0.01)
+		void simulate(CubeFileWriter& pfw, CubeFileWriter& sfw, const double simulTime, 
+			const double eta, const double cfl = 1., const double logTimeStep = 0.01)
 		{
 			using namespace std;
 
 			cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
-			cout << "Output file: " << m_filename << std::endl;
 
 			const double grav_angle = 0.0001;
 
 			double t = 0;
 			double h;
-
-			CubeFileWriter fw;
-			fw.setShape({ particles.size(), fileDat<D>::numElements() });
-			fw.open(m_filename);
 
 			std::vector<std::vector<srn>> neigs(particles.size());
 			std::vector<std::vector<srv>> neigs_mirror(particles.size());
@@ -495,9 +531,9 @@ namespace Fluid
 			h = get_h(eta);
 			findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
 			computeDensity(h, neigs, neigs_mirror, ISOTHERMAL);
-			logParticles(fw, t);
-
-			auto startTime = chrono::high_resolution_clock::now();
+			
+			logParticles(pfw, t);
+			logSolids(sfw, t);
 
 			double neighbourTime = 0;
 			int counter = 0;
@@ -520,8 +556,8 @@ namespace Fluid
 					#pragma omp parallel for 
 					for (int i = 0; i < particles.size(); i++)
 					{
-						if (t == 0 && i == 0 && omp_get_thread_num() == 0)
-							std::cout << "Number of opm threads working: " << omp_get_num_threads() << std::endl;
+						/*if (t == 0 && i == 0 && omp_get_thread_num() == 0)
+							std::cout << "Number of opm threads working: " << omp_get_num_threads() << std::endl;*/
 
 						auto& p1 = particles[i];
 						vec<D> accel_acc;
@@ -530,35 +566,44 @@ namespace Fluid
 						double inte_acc = 0;
 						double inte_acc_visc = 0;
 						double delV_acc = 0;
-						double lambda;
-						for (srn& p2p : neigs[i])
+						double lambda, Pi;
+						for (const srn& p2p : neigs[i])
 						{
 							const particle& p2 = *p2p.neigh;
 							double dist = p2p.dist;
 							auto rij = (p1.pos - p2.pos);
 							auto vij = (p1.vel - p2.vel);
-							auto rijn = dist == 0 ? rij : rij * (1 / dist);
-							accel_acc += rijn * (-p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kernel.der(dist, h));
-							lambda = get_viscLambda(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
-							inte_acc += vij.dot(rijn) * p2.mass * kernel.der(dist, h);
-							inte_acc_visc += rijn.dot(rijn) * lambda * p2.mass * kernel.der(dist, h);
-							delV_acc += vij.dot(rijn) * (p2.mass / p2.density * kernel.der(dist, h));
-							visc_acc += rijn * p2.mass * kernel.der(dist, h) * -get_viscPi(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+							auto rijn = dist == 0 ? rij : rij / dist;
+							double kd = kernel.der(dist, h);
+							
+							get_viscPiLambda(Pi,lambda,p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+						
+							accel_acc += rijn * -p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kd;
+							visc_acc += rijn * -p2.mass * Pi * kd;
+
+							inte_acc += vij.dot(rijn) * p2.mass * kd;
+							inte_acc_visc += lambda * p2.mass * kd;
+							
+							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd;
 						};
 						for (auto p2p : neigs_mirror[i])
 						{
 							const particle& p2 = *p2p.neigh;
-
 							auto rij = p2p.relPos * (-1);
 							auto vij = (p1.vel - p2.vel);
 							double dist = rij.length();
 							auto rijn = dist == 0 ? rij : rij * (1 / dist);
-							accel_acc += rijn * (-p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kernel.der(dist, h));
-							lambda = get_viscLambda(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
-							inte_acc += vij.dot(rijn) * p2.mass * kernel.der(dist, h);
-							inte_acc_visc += rijn.dot(rijn) * lambda * p2.mass * kernel.der(dist, h);
-							delV_acc += vij.dot(rijn) * (p2.mass / p2.density * kernel.der(dist, h));
-							visc_acc += rijn * p2.mass * kernel.der(dist, h) * -get_viscPi(p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+							double kd = kernel.der(dist, h);
+
+							get_viscPiLambda(Pi, lambda, p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+
+							accel_acc += rijn * -p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kd;
+							visc_acc += rijn * -p2.mass * Pi * kd;
+
+							inte_acc += vij.dot(rijn) * p2.mass * kd;
+							inte_acc_visc += lambda * p2.mass * kd;
+
+							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd; 
 						};
 						if (GRAVITATION)
 						{
@@ -596,8 +641,9 @@ namespace Fluid
 					AutoTimer at(g_timer, "simulate - apply change");
 					for (auto& p1 : particles)
 					{
-						if(t<externalTime)
-							p1.accel += externalAcceleration + externalForce * (1. / p1.mass);
+						if (t < externalTime) {
+							p1.accel += (externalAcceleration + externalForce / p1.mass)/** (p1.pos.y < 0.5 ? -1. : 1.)*/;
+						}
 
 
 						if (p1.group != 0){
@@ -614,22 +660,26 @@ namespace Fluid
 					for (solid& so : solids) 
 					{
 						// compute linear and angular force (torque) from particle accelerations
-						vec<2> totalForce;
+						so.dragForce = { 0,0 };
 						double totalTorque = 0;
 						for (auto* p : so.particles) {
 							vec<2> conn = p->pos - so.com;
-							totalForce += p->accel * p->mass;
+							so.dragForce += p->accel * p->mass;
 							totalTorque += (conn.cross(p->accel)) * p->mass;
 						}
 
 						// move and rotate the solid
-						auto linAccel = totalForce  / so.totalMass;
-						auto angAccel = totalTorque / so.momentOfInertia;
-						so.com += so.vel * dt;
-						so.vel += linAccel * dt * 0;
-						so.angle += so.omega * dt;
-						so.omega += angAccel * dt;
-						
+						if (!so.positionLocked) {
+							auto linAccel = so.dragForce / so.totalMass;
+							so.com += so.vel * dt;
+							so.vel += linAccel * dt;
+						}
+						if (!so.rotationLocked) {
+							auto angAccel = totalTorque / so.momentOfInertia;
+							so.angle += so.omega * dt;
+							so.omega += angAccel * dt;
+						}
+
 						// recompute the individual particle positions
 						for (auto* p : so.particles) {
 							p->pos = so.com + so.subpositions[p->id].rotate(so.angle);
@@ -668,8 +718,8 @@ namespace Fluid
 
 				if ((int)(t / logTimeStep) != (int)((t - dt) / logTimeStep))
 				{
-					//std::cout << std::setprecision(std::numeric_limits<double>::digits10 + 1) << t << ", h = " << h << std::endl;
-					logParticles(fw, t);
+					logParticles(pfw, t);
+					logSolids(sfw, t);
 				}
 				counter++;
 
@@ -680,19 +730,9 @@ namespace Fluid
 				}
 			}
 
-
-			auto endTime = chrono::high_resolution_clock::now();
-			cout << "Simulation finished. Timesteps: " << counter << ", Duration: " << chrono::duration_cast<chrono::milliseconds>(endTime - startTime).count() << " ms" << std::endl;
-
-			std::cout << "Average neighbour search took: " << neighbourTime / counter << " mus" << std::endl;
-
-			cout << "Writing to file... ";
-			fw.close();
-			cout << "Done!" << endl << endl;
+			cout << "Simulation finished. Timesteps: " << counter << std::endl;
 		}
 
-		auto& getTree() { return kdt; }
-		
 	};
 
 }

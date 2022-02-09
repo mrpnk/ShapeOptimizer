@@ -105,6 +105,7 @@ public:
 	void writeData(const std::vector<T>& data)
 	{
 		// appends data to the current layer
+		if(!data.empty())
 		myfile.write((char*)&data[0], sizeof(T)*data.size());
 	}
 

@@ -148,7 +148,7 @@ void windchannel()
 {
 	using sph_t = Fluid::SPH<2>;
 	sph_t sph;
-	sph.init(1.4, 1.0, 16); // dry air, 0 degree Celsius, normal pressure
+	sph.init(1.4, 1, 16); // dry air, 0 degree Celsius, normal pressure
 	
 	sph.setDomain({ {{0,1},{0,1}} },
 		{ { {sph_t::periodic, sph_t::periodic},
@@ -158,14 +158,30 @@ void windchannel()
 	sph.setExternalAcceleration({ 0,0 });
 	sph.setExternalForce({ 0.01,0 });
 
-	sph.createParticles(400, 1);
+	sph.createParticles(400, 1.0);
 	sph.createSolid();
 
-	sph.simulate<false, true>("glass2d.binary", 10, 1.0, 0.5, 0.01);
+
+	CubeFileWriter pfw;
+	pfw.setShape({ sph.getNumParticles(), Fluid::fileParticleData<2>::numElements()});
+	pfw.open("particles.binary");
+
+	CubeFileWriter sfw;
+	sfw.setShape({ sph.getNumSolids(), Fluid::fileSolidData<2>::numElements() });
+	sfw.open("solids.binary");
+
+	sph.simulate<false, true>(pfw, sfw, 2, 1.0, 0.8, 0.005);
+
+
+
+	pfw.close();
+	std::cout << "Particles written to file!" << std::endl;
+
+	sfw.close();
+	std::cout << "Solids written to file!" << std::endl;
 
 	sph.getTree().toFile("kdtree.binary");
-	std::cout << "tree written to file" << std::endl;
-
+	std::cout << "Tree written to file!" << std::endl;
 }
 
 int main(){
@@ -195,12 +211,13 @@ int main(){
 	std::cout << "Max number of OMP threads: " << omp_get_max_threads() << std::endl;
 	
 	srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+	//srand(3245);
 
 	windchannel();
 
 	
 	g_timer.print();
-//	std::cin.get();
+	std::cin.get();
 
 	return 0;
 }
