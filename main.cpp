@@ -1,5 +1,7 @@
 ﻿#include "ShapeOptimizer.h"
 
+#include "hydro/sph.h"
+
 #include <iostream>
 #include <fstream>
 #include <array>
@@ -15,14 +17,8 @@ struct optimizationInfo {
 	}
 };
 
-struct vec2 {
-	float x, y;
-	friend std::ostream& operator << (std::ostream& os, vec2 const& ve) {
-		return os << ve.x << " " << ve.y;
-	}
-};
 struct edge {
-	vec2 a, b;
+	vec<2> a, b;
 	friend std::ostream& operator << (std::ostream& os, edge const& ed) {
 		return os << ed.a << " " << ed.b;
 	}
@@ -87,10 +83,12 @@ public:
 
 		for (int y = 0; y < h-1; ++y) {
 			for (int x = 0; x < w - 1; ++x) {
-				vec2 centerNodes[4] = { {x + 0.5f,y},{x + 1,y + 0.5f},{x,y + 0.5f},{x + 0.5f,y + 1} };
+				vec<2> centerNodes[4] = { {x + 0.5,(double)y},{x + 1.,y + 0.5},{(double)x,y + 0.5},{(double)x + 0.5,y + 1.} };
 				size_t idx = (dataset[y][x] << 3) + (dataset[y][x + 1] << 2) + (dataset[y + 1][x] << 1) + (dataset[y + 1][x + 1]);
 				for (auto const& a : lu[idx]) {
-					bd.edges.push_back({ centerNodes[a[0]],centerNodes[a[1]] });
+					edge e;
+					e.a = centerNodes[a[0]];
+					bd.edges.push_back(edge{ centerNodes[a[0]],centerNodes[a[1]] });
 				}
 			}
 		}
@@ -146,7 +144,29 @@ public:
 	}
 };
 
-#include "hydro/sph.h"
+void windchannel()
+{
+	using sph_t = Fluid::SPH<2>;
+	sph_t sph;
+	sph.init(1.4, 1.0, 16); // dry air, 0 degree Celsius, normal pressure
+	
+	sph.setDomain({ {{0,1},{0,1}} },
+		{ { {sph_t::periodic, sph_t::periodic},
+			{sph_t::wall, sph_t::wall} } });
+
+	sph.setExternalTime(1);
+	sph.setExternalAcceleration({ 0,0 });
+	sph.setExternalForce({ 0.01,0 });
+
+	sph.createParticles(400, 1);
+	sph.createSolid();
+
+	sph.simulate<false, true>("glass2d.binary", 10, 1.0, 0.5, 0.01);
+
+	sph.getTree().toFile("kdtree.binary");
+	std::cout << "tree written to file" << std::endl;
+
+}
 
 int main(){
 	scene sc;
@@ -172,26 +192,16 @@ int main(){
 	file << b;
 	file.close();*/
 
-	std::cout << "Number of omp threads: " << omp_get_max_threads() << std::endl;
+	std::cout << "Max number of OMP threads: " << omp_get_max_threads() << std::endl;
 	
 	srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-	srand(57);
 
-	Fluid::SPH<2> sph(1.4, 5.0, 16); // dry air, 0 degree Celsius, normal pressure
+	windchannel();
 
-	Fluid::TestCase<2> tc;
-	tc.initWindchannel(sph, 500);
-
-	sph.checkConsistency();
-	sph.simulate<false, true>("glass2d.binary", 5, 1.0, 0.5, 0.01);
-
-	sph.getTree().toFile("kdtree.binary");
-	std::cout << "tree written to file" << std::endl;
-
+	
 	g_timer.print();
-	std::cin.get();
+//	std::cin.get();
 
 	return 0;
 }
-
 

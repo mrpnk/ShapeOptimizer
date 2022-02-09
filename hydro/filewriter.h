@@ -8,11 +8,20 @@ class CubeFileWriter
 	{
 		int x;
 		int y;
+
 	};
 
-	std::vector<int> sizes;
+	std::vector<size_t> dim;
 	std::vector<std::vector<double>> header;
 	std::fstream myfile;
+
+	void writeDims() {
+		size_t d = dim.size();
+		myfile.seekp(0); 
+		myfile.write((char*)&d, sizeof(size_t));
+		myfile.write((char*)&dim[0], sizeof(size_t) * d);
+	}
+
 public:
 
 	template<typename T>
@@ -65,51 +74,49 @@ public:
 		{
 			return  m_pos != other.m_pos || m_container != other.m_container;
 		}
-		T&    operator* ()
+		T& operator* ()
 		{
 			return (*m_container)[m_pos];
 		}
 	};
 
-	void setShape(std::vector<int> subelementDimensions)
+	void setShape(std::vector<size_t> subelementDimensions)
 	{
-		sizes = subelementDimensions;
-		sizes.insert(sizes.begin(), 0);
-		header.resize(sizes.size());
-		for (size_t i = 0; i < sizes.size(); i++)
-			header[i].resize(sizes[i], 0);
+		dim = subelementDimensions;
+		dim.insert(dim.begin(), 0);
+		header.resize(dim.size());
+		for (size_t i = 0; i < dim.size(); i++)
+			header[i].resize(dim[i], 0);
 	}
 	void open(std::string filename)
 	{
-		int d = sizes.size();
 		myfile = std::fstream(filename, std::ios::out | std::ios::binary);
-		myfile.write((char*)&d, sizeof(int));
-		myfile.write((char*)&sizes[0], sizeof(int)*d);
+		writeDims();
 	}
 
-	void new_row()
+	void newLayer()
 	{
-		// starts a new row in the hypercube
-		sizes[0]++;
+		// starts a new layer of dimensions "dim" in the hypercube
+		dim[0]++;
 		header[0].push_back(0);
 	}
 
 	template<typename T>
-	void to_data(const std::vector<T>& data)
+	void writeData(const std::vector<T>& data)
 	{
-		// appends data to the current row
+		// appends data to the current layer
 		myfile.write((char*)&data[0], sizeof(T)*data.size());
 	}
 
 	template<typename T>
-	void to_data(const block_iter<T>& begin, const block_iter<T>& end)
+	void writeData(const block_iter<T>& begin, const block_iter<T>& end)
 	{
-		// appends data to the current row
+		// appends data to the current layer
 		for (auto it = begin; it != end; ++it)
 			myfile.write((char*)&(*it), sizeof(T));
 	}
 
-	void to_header(double value, int d, int i = -1)
+	void writeHeader(double value, int d, int i = -1)
 	{
 		// labels a header in dimension d with index i
 		if (i < 0)
@@ -121,20 +128,21 @@ public:
 	{
 		if (myfile.is_open())
 		{
-			for (size_t i = 0; i < sizes.size(); i++)
+			for (size_t i = 0; i < dim.size(); i++)
 				myfile.write((char*)&header[i][0], sizeof(double)*header[i].size());
 
 			// Update the dimension in the file
-			int d = sizes.size();
-			myfile.seekp(sizeof(int) * 1);
-			myfile.write((char*)&sizes[0], sizeof(int)*d);
+			writeDims();
 			myfile.close();
+		}
+		else {
+			std::cout << "WARNING: The file has never been opened." << std::endl;
 		}
 	}
 
 	void reset()
 	{
-		sizes.clear();
+		dim.clear();
 		header.clear();
 		myfile.clear();
 	}

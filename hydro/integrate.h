@@ -63,12 +63,12 @@ void integrate(const butcher& butch, std::string filename)
 		ts.push_back(t);
 	}
 	CubeFileWriter fw;
-	fw.setShape({ (int)ys.size() });
+	fw.setShape({ ys.size() });
 	fw.open(filename);
-	fw.new_row();
-	fw.to_data(ts);
-	fw.new_row();
-	fw.to_data(ys);
+	fw.newLayer();
+	fw.writeData(ts);
+	fw.newLayer();
+	fw.writeData(ys);
 	fw.close();
 
 	std::cout << " integration done" << std::endl;

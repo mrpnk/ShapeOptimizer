@@ -84,25 +84,44 @@ namespace Fluid
 		}
 	};
 
-	template<int d>
-	class TestCase{};
-
+	template<int D>
+	struct fileDat {
+		vec<D> pos;
+		vec<D> vel;
+		double dens;
+		double press;
+		double intE;
+		double kinE;
+		double gravE;
+		double group;
+		double id;
+		static inline size_t numElements() {
+			return { D + D + 1 + 1 + 3 + 2 };
+		}
+	};
+	
 	template<int D>
 	class SPH
 	{
-		friend class TestCase<D>;
+	public:
+		enum BoundaryType
+		{
+			outflow,
+			periodic,
+			wall
+		};
 
-		const double gamma; // adiabatic index
+	private:
+		double gamma; // adiabatic index
 		const double G = 8 * 2;
-		const double alpha; // volume viscosity
-		const double beta;  // other viscosity
+		double alpha; // volume viscosity
+		double beta;  // other viscosity
 		std::array<vec<2>, D> domain;
 		std::array<double, D> domainSpan;
 
 		m4spline<D> kernel = m4spline<D>();
 
-		struct particle
-		{
+		struct particle{
 			vec<D> pos;
 			vec<D> vel;
 			vec<D> accel;
@@ -111,8 +130,9 @@ namespace Fluid
 			double pressure;
 			double energy;
 			double energyDer;
-
 			double delVabs;
+			int    group=0; // 0=gas. 1,2..=solids
+			int	   id; // inside their group
 
 			template<bool ISOTHERMAL>
 			double get_c(double gamma) const
@@ -136,18 +156,27 @@ namespace Fluid
 			static inline const double& getMass(const particle& p) { return p.mass; }
 		};
 
+		struct solid {
+			vec<D> com; // center of mass
+			vec<D> vel; // linear velocity
+			double totalMass;
+
+			double angle; // rotation angle
+			double omega; // angular velocity
+			double momentOfInertia;
+
+			std::vector<particle*> particles; // temporarily pointing inside SPH::particles
+			std::vector<vec<2>> subpositions; // not nessecariy in the same order as "particles"
+		};
+		std::vector<solid> solids;
+
 		std::vector<particle> particles;
 		KDTree<D, particle> kdt;
 
-		enum BoundaryType
-		{
-			outflow,
-			periodic,
-			wall
-		};
 		std::array<std::array<BoundaryType,2>, D> boundaryTypes;
 
-		vec<D> externalAcceleration;
+		vec<D> externalAcceleration, externalForce;
+		double externalTime = 0;
 
 		using srn = typename decltype(kdt)::search_result_neigh;
 		using srv = typename decltype(kdt)::search_result_vneigh;
@@ -275,7 +304,7 @@ namespace Fluid
 
 					// For wall boundaries we let each particle see its phantom mirrored version
 					if (boundaryTypes[k][1] == wall) {
-						if (domain[k][1] - particles[i].pos[k] < r)
+						if (domain[k][1] - particles[i].pos[k] < r/2)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] = 2*domain[k][1] - vpos[k];
 							
@@ -285,7 +314,7 @@ namespace Fluid
 						}
 					}
 					if (boundaryTypes[k][0] == wall) {
-						if (particles[i].pos[k] - domain[k][0] < r)
+						if (particles[i].pos[k] - domain[k][0] < r/2)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] = 2 * domain[k][0] - vpos[k];
 
@@ -346,43 +375,100 @@ namespace Fluid
 					{auto dist = (r.com - pos).length(); return dist > 0.0001 ? l + r.mass / dist : l; });
 			};	
 
-			struct fileDat{
-				vec<D> pos;
-				vec<D> vel;
-				double dens;
-				double press;
-				double intE;
-				double kinE;
-				double gravE;
-			};
-			std::vector<fileDat> data(particles.size());		
+			std::vector<fileDat<D>> data(particles.size());		
 			std::transform(particles.begin(), particles.end(), data.begin(), [&grav_pot](const particle& p)
 				{
-					return fileDat{ p.pos, p.vel, p.density, p.pressure, p.energy * p.mass, p.vel.lengthsq() * (0.5 * p.mass), 0/*grav_pot(p.pos) * p.mass*/ };
+					return fileDat{ p.pos, p.vel, p.density, p.pressure,
+						p.energy * p.mass, p.vel.lengthsq() * (0.5 * p.mass), 0/*grav_pot(p.pos) * p.mass*/ ,
+						(double)p.group, (double)p.id};
 				});
 
-			fw.new_row();
-			fw.to_data(data);
-			fw.to_header(time, 0);	
+			fw.newLayer();
+			fw.writeData(data);
+			fw.writeHeader(time, 0);	
 		}
 
 	public:
-		SPH(double gamm, double alph, int leafCapacity) : gamma(gamm), alpha{ alph }, beta{ 2 * alpha } {
+		SPH(){}
+		void init(double gamm, double alph, int leafCapacity) {
+			gamma = gamm;
+			alpha = alph;
+			beta = 2 * alpha;
+
+			kdt.setPositionCB(&particle::getPos);
+			kdt.setMassCB(&particle::getMass); 
 			kdt.setLeafSize(leafCapacity); // number of particles per kd-tree leaf
 		}
+		void setDomain(decltype(domain) dom, decltype(boundaryTypes) bt) {
+			domain = dom;
+			boundaryTypes = bt;
 
-		void checkConsistency() {
 			bool problemFound = false;
 			for (int d = 0; d < D; ++d)
 				domainSpan[d] = domain[d][1] - domain[d][0];
-			for(int d = 0;d<D;++d)
+			for (int d = 0; d < D; ++d)
 				if ((boundaryTypes[d][0] == periodic) != ((boundaryTypes[d][1] == periodic))) {
 					std::cout << "WARNING: Dimension " << d << ": opposite sides must both have periodic boundary conditions.";
 					problemFound = true;
 				}
 			if (!problemFound)
-				std::cout << "Consistency check passed!" << std::endl;
+				std::cout << "Boundary consistency check passed!" << std::endl;
 		}
+		void setExternalAcceleration(vec<D> ea) {
+			externalAcceleration = ea;
+		}
+		void setExternalForce(vec<D> fo) {
+			externalForce = fo;
+		}
+		void setExternalTime(double et) {
+			externalTime = et;
+		}
+
+		void createParticles(int numParticles, double totalMass = 1.0) {
+			// The mass has no effect if all particles have the same mass
+			size_t offset = particles.size();
+			particles.resize(offset+numParticles);
+			for (int i = 0; i < numParticles; i++)
+			{
+				auto x = ((rand() % 10000) / 10000.0);
+				auto y = ((rand() % 10000) / 10000.0);
+				particles[offset + i] = { { x, y },{ 0, 0 },{ 0, 0 }, totalMass / numParticles, 0, 0, 1, 0 };
+			}
+		}
+		void createSolid() {
+			solid so;
+			so.totalMass = 1;
+			vec<2> ori = { 0.5,0.5 };
+
+			so.subpositions = { {1,-2}, {0,-1}, {0,0}, {0,1}, {-1,2} };
+			size_t offset = particles.size();
+			particles.resize(offset + so.subpositions.size());
+			for (int i = 0; i < so.subpositions.size(); i++) {
+				particles[offset + i] = { ori +(so.subpositions[i]*0.05),{ 0, 0 },{ 0, 0 },
+					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
+				particles[offset + i].group = 1;
+				particles[offset + i].id = i;
+				so.particles.push_back(&particles[offset + i]);
+			}
+
+			// Compute center of mass and moment of inertia
+			for (auto* p : so.particles) {
+				so.com += p->pos * p->mass;	
+			}
+			so.com = so.com * (1. / so.totalMass);
+			for (auto* p : so.particles) {
+				so.momentOfInertia += (p->pos - so.com).lengthsq() * p->mass;
+			}
+			
+
+			// recompute the subpositions relative to the COM
+			for (int i = 0; i < so.subpositions.size(); i++) {
+				so.subpositions[i] = so.particles[i]->pos - so.com;
+			}
+
+
+			solids.push_back(so);
+		};
 
 
 		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
@@ -399,7 +485,7 @@ namespace Fluid
 			double h;
 
 			CubeFileWriter fw;
-			fw.setShape({ (int)particles.size(), (D + D + 1 + 1 + 3) });
+			fw.setShape({ particles.size(), fileDat<D>::numElements() });
 			fw.open(m_filename);
 
 			std::vector<std::vector<srn>> neigs(particles.size());
@@ -504,23 +590,58 @@ namespace Fluid
 
 				// update energy and position
 				{
+					for (auto& so : solids)
+						so.particles.clear();
+
 					AutoTimer at(g_timer, "simulate - apply change");
 					for (auto& p1 : particles)
 					{
-						p1.accel += externalAcceleration * dt;
+						if(t<externalTime)
+							p1.accel += externalAcceleration + externalForce * (1. / p1.mass);
 
 
-						if (!ISOTHERMAL)
-							p1.energy += p1.energyDer * dt;
-						p1.pos += p1.vel * dt;
-						p1.vel += p1.accel * dt;
+						if (p1.group != 0){
+							solids[p1.group - 1].particles.push_back(&p1);
+							continue;
+						}
+						else {
+							if (!ISOTHERMAL)
+								p1.energy += p1.energyDer * dt;
+							p1.pos += p1.vel * dt;
+							p1.vel += p1.accel * dt;
+						}
+					}
+					for (solid& so : solids) 
+					{
+						// compute linear and angular force (torque) from particle accelerations
+						vec<2> totalForce;
+						double totalTorque = 0;
+						for (auto* p : so.particles) {
+							vec<2> conn = p->pos - so.com;
+							totalForce += p->accel * p->mass;
+							totalTorque += (conn.cross(p->accel)) * p->mass;
+						}
 
-
+						// move and rotate the solid
+						auto linAccel = totalForce  / so.totalMass;
+						auto angAccel = totalTorque / so.momentOfInertia;
+						so.com += so.vel * dt;
+						so.vel += linAccel * dt * 0;
+						so.angle += so.omega * dt;
+						so.omega += angAccel * dt;
+						
+						// recompute the individual particle positions
+						for (auto* p : so.particles) {
+							p->pos = so.com + so.subpositions[p->id].rotate(so.angle);
+						}
+					}
+					for (auto& p1 : particles)
+					{
 						// apply boundary conditions
 						for (int k = 0; k < D; k++) {
-							if(boundaryTypes[k][0] == periodic){
+							if (boundaryTypes[k][0] == periodic) {
 								while (p1.pos[k] < domain[k][0])
-									p1.pos[k] += domainSpan[k]; 
+									p1.pos[k] += domainSpan[k];
 								while (p1.pos[k] > domain[k][1])
 									p1.pos[k] -= domainSpan[k];
 								continue;
@@ -529,12 +650,14 @@ namespace Fluid
 								if (p1.pos[k] < domain[k][0]) {
 									p1.pos[k] = domain[k][0];
 									p1.vel[k] *= -1;
+									p1.accel[k] = 0;
 								}
 							}
 							if (boundaryTypes[k][1] == wall) {
 								if (p1.pos[k] > domain[k][1]) {
 									p1.pos[k] = domain[k][1];
 									p1.vel[k] *= -1;
+									p1.accel[k] = 0;
 								}
 							}
 						}
@@ -569,34 +692,7 @@ namespace Fluid
 		}
 
 		auto& getTree() { return kdt; }
+		
 	};
 
-
-	template<>
-	class TestCase<2>
-	{
-		using SPH_t = typename SPH<2>;
-	public:	
-		void initWindchannel(SPH_t& sph, int numParticles)
-		{
-			sph.particles.clear();
-			sph.particles.resize(numParticles);
-
-			sph.kdt.setPositionCB(&SPH_t::particle::getPos);
-			sph.kdt.setMassCB(&SPH_t::particle::getMass);
-
-			sph.domain = { { { 0,1 },{0,1} } };
-			sph.boundaryTypes = { { {SPH_t::periodic,SPH_t::periodic},{SPH_t::wall,SPH_t::wall} } };
-
-			sph.externalAcceleration = { 50,0 };
-
-			for (int i = 0; i < numParticles; i++)
-			{
-				auto x = ((rand() % 10000) / 10000.0);
-				auto y = ((rand() % 10000) / 10000.0);
-				sph.particles[i] = { { x, y },{ 0, 0 },{ 0, 0 }, 1.0 / numParticles, 0, 0, 1, 0 };
-			}
-		}
-
-	};
 }

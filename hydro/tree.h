@@ -31,61 +31,6 @@ template<int D> struct vec : public vec_base
 	friend std::ostream& operator<< (std::ostream& os, const vec<D>& p);
 };
 
-template<> struct vec<1> : public vec_base
-{
-	double x = 0;
-	
-	vec(double x=0) : x{ x } {}
-
-	inline double length() const
-	{
-		return abs(x);
-	}
-	inline double lengthsq() const
-	{
-		return x*x;
-	}
-	inline vec<1>& normalize()
-	{
-		if (x != 0)
-			x /= abs(x);
-		return *this;
-	}
-	double dot(vec<1> r) const
-	{
-		return x * r.x;
-	}
-
-	vec<1> operator+(const vec<1>& r) const
-	{
-		vec<1> ret = *this;
-		ret.x += r.x;
-		return ret;
-	}
-	vec<1> operator-(const vec<1>& r) const
-	{
-		vec<1> ret = *this;
-		ret.x -= r.x;
-		return ret;
-	}
-	vec<1> operator*(double r) const
-	{
-		vec<1> ret = *this;
-		ret.x *= r;
-		return ret;
-	}
-	vec<1>& operator+=(const vec<1>& r)
-	{
-		x += r.x;
-		return *this;
-	}
-	
-	friend std::ostream& operator<< (std::ostream& os, const vec<1>& p)
-	{
-		os << "(" << p.x << ")";
-		return os;
-	}
-};
 template<> struct vec<2> : public vec_base
 {
 	double x = 0, y = 0;
@@ -110,19 +55,28 @@ template<> struct vec<2> : public vec_base
 		}
 		return *this;
 	}
-	double dot(vec<2> r) const
+	double dot(vec<2> const& r) const
 	{
 		return x * r.x + y * r.y;
 	}
+	double cross(vec<2> const& r) const
+	{
+		return x * r.y - y * r.x;
+	}
+	vec<2> rotate(double angle)
+	{
+		return { x * cos(angle) - y * sin(angle), x * sin(angle) + y * cos(angle) };
+	}
 
-	vec<2> operator+(const vec<2>& r) const
+
+	vec<2> operator+(vec<2> const& r) const
 	{
 		vec<2> ret = *this;
 		ret.x += r.x;
 		ret.y += r.y;
 		return ret;
 	}
-	vec<2> operator-(const vec<2>& r) const
+	vec<2> operator-(vec<2> const& r) const
 	{
 		vec<2> ret = *this;
 		ret.x -= r.x;
@@ -136,16 +90,23 @@ template<> struct vec<2> : public vec_base
 		ret.y *= r;
 		return ret;
 	}
-	vec<2>& operator+=(const vec<2>& r)
+	vec<2> operator/(double r) const
+	{
+		vec<2> ret = *this;
+		ret.x /= r;
+		ret.y /= r;
+		return ret;
+	}
+	vec<2>& operator+=(vec<2> const& r)
 	{
 		x += r.x;
 		y += r.y;
 		return *this;
 	}
 	
-	friend std::ostream& operator<< (std::ostream& os, const vec<2>& p)
+	friend std::ostream& operator<< (std::ostream& os, vec<2> const& p)
 	{
-		os << "(" << p.x << ", " << p.y << ")";
+		os << p.x << " " << p.y;
 		return os;
 	}
 }; 
@@ -162,22 +123,22 @@ template<int D> struct aabb
 	bool rectRectIntersect(aabb<D> rect2);
 	void subdivide(aabb<D>* rects[1<<D]);
 };
-
-template<> bool aabb<1>::contains(vec<1> p)
-{
-	return p.x >= origin.x && p.x <= origin.x + size; // TODO nicht kachelbar
-}
-template<> bool aabb<1>::rectRectIntersect(aabb<1> rect2)
-{
-	return (origin.x < rect2.origin.x + rect2.size&&
-		origin.x + size > rect2.origin.x);
-}
-template<> void aabb<1>::subdivide(aabb<1>* rects[2])
-{
-	auto s = size;
-	*(rects[0]) = aabb<1>(origin, s / 2);
-	*(rects[1]) = aabb<1>(origin + pos_t{ s / 2 }, s / 2);
-}
+//
+//template<> bool aabb<1>::contains(vec<1> p)
+//{
+//	return p.x >= origin.x && p.x <= origin.x + size; // TODO nicht kachelbar
+//}
+//template<> bool aabb<1>::rectRectIntersect(aabb<1> rect2)
+//{
+//	return (origin.x < rect2.origin.x + rect2.size&&
+//		origin.x + size > rect2.origin.x);
+//}
+//template<> void aabb<1>::subdivide(aabb<1>* rects[2])
+//{
+//	auto s = size;
+//	*(rects[0]) = aabb<1>(origin, s / 2);
+//	*(rects[1]) = aabb<1>(origin + pos_t{ s / 2 }, s / 2);
+//}
 
 template<> bool aabb<2>::contains(vec<2> p)
 {
@@ -354,8 +315,8 @@ public:
 		fw.open(filename);
 		int count = 0;
 		std::function<void(Tree<D,T,P>*)> func = [&](Tree<D,T,P> *q) {
-			fw.new_row();
-			fw.to_data<aabb_t>({ q->boundary });
+			fw.newLayer();
+			fw.writeData<aabb_t>({ q->boundary });
 			if (q->parts[0])
 				for (auto& qq : q->parts)
 				{
@@ -378,8 +339,8 @@ public:
 		{	
 			if (data)
 			{
-				fw.new_row();
-				fw.to_data<pos_t>({ get_pos(*data) });
+				fw.newLayer();
+				fw.writeData<pos_t>({ get_pos(*data) });
 			}
 			if (q->parts[0])
 				for (auto& qq : q->parts)
@@ -397,8 +358,8 @@ public:
 		fw.open(filename);
 
 		query_range({ 6 }, 3, [&](T& tt, double dd) {
-				fw.new_row();
-				fw.to_data<pos_t>({ get_pos(tt) });
+				fw.newLayer();
+				fw.writeData<pos_t>({ get_pos(tt) });
 		});
 
 		fw.close();
