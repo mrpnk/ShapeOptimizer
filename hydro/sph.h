@@ -178,9 +178,9 @@ namespace Fluid
 		};
 
 		std::vector<particle> particles;
+		int nActiveParticles = 0;
 		KDTree<D, particle> kdt;
-		int maxParticles = 0;
-
+		
 		struct solid {
 			vec<D> com; // center of mass
 			vec<D> vel; // linear velocity
@@ -213,21 +213,18 @@ namespace Fluid
 
 		double get_h(double eta)
 		{
-			// Returns the kernel size for this timestep
+			// Returns the kernel size for this timestep, scales quadratically in nActiveParticles and schould only be used in the beginning 
 			AutoTimer at(g_timer, "get_h");
-
 
 			// avg is the mean of the minimal distances
 			double avg = 0;
 
-		//	kdt.searchNumber()
-
 			#pragma omp parallel for reduction(+:avg)
-			for (int i = 0; i < particles.size(); i++)
+			for (int i = 0; i < nActiveParticles; i++)
 			{
 				const auto& p1 = particles[i];
 				double md = 9999;
-				for (int j = 0; j < particles.size(); j++) // TODO use the neighbours instead of quadratic
+				for (int j = 0; j < nActiveParticles; j++)
 				{
 					const auto& p2 = particles[j];
 					if (j != i)
@@ -236,8 +233,7 @@ namespace Fluid
 				avg += md;
 			}
 
-
-			return eta * avg / particles.size();
+			return eta * avg / nActiveParticles;
 		}
 
 	
@@ -260,10 +256,11 @@ namespace Fluid
 		{
 			AutoTimer at(g_timer, "rebuildTree");
 			
-			kdt.construct(particles.begin(), particles.end());
+			kdt.construct(particles.begin(), particles.begin()+nActiveParticles);
 		}
 
-		void findNeighbours(const double h, const double grav_angle, const bool _enable_grav_,
+		template<bool GRAVITATION>
+		void findNeighbours(const double h, const double grav_angle,
 			std::vector<std::vector<srn>>& neigs,
 			std::vector<std::vector<srv>>& neigs_mirror,
 			std::vector<std::vector<srm>>& masses)
@@ -276,7 +273,7 @@ namespace Fluid
 			rebuildTree();
 
 			#pragma omp parallel for 
-			for (int i = 0; i < particles.size(); i++)
+			for (int i = 0; i < nActiveParticles; i++)
 			{
 				int counter;
 				neigs[i].clear();
@@ -353,7 +350,7 @@ namespace Fluid
 					}
 				}
 				
-				if (_enable_grav_)
+				if constexpr (GRAVITATION)
 				{
 					masses[i].clear();
 					kdt.searchLayerMasses(particles[i].pos, grav_angle, masses[i]);
@@ -361,12 +358,13 @@ namespace Fluid
 			}
 		}
 
-		void computeDensity(double h, bool isothermal,
+		template<bool ISOTHERMAL>
+		void computeDensity(double h,
 			std::vector<std::vector<srn>> const& neigs,
 			std::vector<std::vector<srv>> const& neigs_mirror)
 		{
 			AutoTimer at(g_timer, "computeDensity");
-			for (int i = 0; i < particles.size(); i++)
+			for (int i = 0; i < nActiveParticles; i++)
 			{
 				auto& p1 = particles[i];
 				p1.density = 0;
@@ -383,7 +381,7 @@ namespace Fluid
 					p1.density += p2.mass*kernel(p2p.dist, h);
 				};
 
-				if (!isothermal)
+				if constexpr (!ISOTHERMAL)
 					p1.pressure = p1.density*p1.energy*(gamma - 1);
 				else
 					p1.pressure = p1.density*p1.energy;
@@ -397,15 +395,15 @@ namespace Fluid
 			using srm = typename decltype(kdt)::search_result_mass;
 			auto grav_pot = [this](const vec<D>& pos)
 			{
-				std::vector<srm> masses(particles.size());
+				std::vector<srm> masses(nActiveParticles);
 				kdt.searchLayerMasses(pos, 0, masses);
 
 				return -G * std::accumulate(masses.begin(), masses.end(), 0., [&](double l, const srm& r)
 					{auto dist = (r.com - pos).length(); return dist > 0.0001 ? l + r.mass / dist : l; });
 			};	
 
-			std::vector<fileParticleData<D>> data(particles.size());
-			std::transform(particles.begin(), particles.end(), data.begin(), [&grav_pot](const particle& p)
+			std::vector<fileParticleData<D>> data(nActiveParticles);
+			std::transform(particles.begin(), particles.begin()+nActiveParticles, data.begin(), [&grav_pot](const particle& p)
 				{
 					return fileParticleData{ p.pos, p.vel, p.density, p.pressure,
 						p.energy * p.mass, p.vel.lengthsq() * (0.5 * p.mass), 0/*grav_pot(p.pos) * p.mass*/ ,
@@ -414,9 +412,6 @@ namespace Fluid
 
 			fw.writeBlocks(data);
 			fw.finishSection(time);
-
-
-			
 		}
 
 		void logSolids(StreamFileWriter& fw, double time)
@@ -433,6 +428,14 @@ namespace Fluid
 			fw.writeBlocks(data);
 			fw.finishSection(time);
 		}
+
+
+		void partitionParticles() {
+			AutoTimer at(g_timer, "partitionParticles");
+			// move all particles that are "removed" to the end of the particle vector
+			nActiveParticles = std::partition(particles.begin(), particles.end(), [](particle const& p) {return !(p.state & psRemoved); }) - particles.begin();
+		}
+
 
 	public:
 		SPH(){}
@@ -479,20 +482,23 @@ namespace Fluid
 				auto y = ((rand() % 10000) / 10000.0);
 				particles[offset + i] = { { x, y },{ 0, 0 },{ 0, 0 }, totalMass / numParticles, 0, 0, 1, 0 };
 			}
+
+			// Make sure that "removed" particles are in the end
+			partitionParticles();
 		}
-		void createSolid() {
+		void createSolid(std::vector<vec<2>> const& subp) {
 			solid so;
 			so.totalMass = .1;
 			int gr = solids.size()+1;
 			so.group = gr;
 
 			vec<2> ori = { 0.5,0.5 };
-			so.subpositions = { {-7,-12}, {-2,-9}, {0,-5}, {0,0}, {0,5}, {-2,9}, {-7,12} };
+			so.subpositions = subp;
 			
 			size_t offset = particles.size();
 			particles.resize(offset + so.subpositions.size());
 			for (int i = 0; i < so.subpositions.size(); i++) {
-				particles[offset + i] = { ori + (so.subpositions[i] * vec<2>{-1,1}*0.01),{0, 0},{0, 0},
+				particles[offset + i] = { ori + (so.subpositions[i] *0.01),{0, 0},{0, 0},
 					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
 				particles[offset + i].group = gr;
 				particles[offset + i].id = i;
@@ -508,6 +514,8 @@ namespace Fluid
 				so.momentOfInertia += (p->pos - so.com).lengthsq() * p->mass;
 			}
 			
+			// Make sure that "removed" particles are in the end
+			partitionParticles();
 
 			// recompute the subpositions relative to the COM
 			for (int i = 0; i < so.subpositions.size(); i++) {
@@ -515,7 +523,7 @@ namespace Fluid
 			}
 
 			// only rotate around COM, dont move
-			so.positionLocked = {1,0};
+			so.positionLocked = {1,1};
 			so.rotationLocked = true;
 
 			solids.push_back(so);
@@ -524,7 +532,7 @@ namespace Fluid
 
 		auto& getTree() { return kdt; }
 
-		size_t getNumParticles() { return particles.size(); }
+		//size_t getNumParticles() { return particles.size(); }
 		size_t getNumSolids() { return solids.size(); }
 
 		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
@@ -538,20 +546,18 @@ namespace Fluid
 
 			cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
 
-			maxParticles = particles.size();
-
 			const double grav_angle = 0.0001;
 
 			double t = 0;
 			double h;
 
-			std::vector<std::vector<srn>> neigs(maxParticles);
-			std::vector<std::vector<srv>> neigs_mirror(maxParticles);
-			std::vector<std::vector<srm>> masses(maxParticles);
+			std::vector<std::vector<srn>> neigs(particles.size());
+			std::vector<std::vector<srv>> neigs_mirror(particles.size());
+			std::vector<std::vector<srm>> masses(particles.size());
 
 			h = get_h(eta);
-			findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
-			computeDensity(h, ISOTHERMAL, neigs, neigs_mirror);
+			findNeighbours<GRAVITATION>(h, grav_angle, neigs, neigs_mirror, masses);
+			computeDensity<ISOTHERMAL>(h, neigs, neigs_mirror);
 			
 			logParticles(pfw, t);
 			logSolids(sfw, t);
@@ -566,10 +572,10 @@ namespace Fluid
 			//	h = get_h(eta);
 
 				// find neighbours
-				findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
+				findNeighbours<GRAVITATION>(h, grav_angle, neigs, neigs_mirror, masses);
 
 				// compute density and pressure
-				computeDensity(h, ISOTHERMAL, neigs, neigs_mirror);
+				computeDensity<ISOTHERMAL>(h, neigs, neigs_mirror);
 
 				// compute energy change and acceleration
 				{
@@ -578,12 +584,12 @@ namespace Fluid
 					avgMinDistance = 0;
 
 					#pragma omp parallel for 
-					for (int i = 0; i < particles.size(); i++)
+					for (int i = 0; i < nActiveParticles; i++)
 					{
 						/*if (t == 0 && i == 0 && omp_get_thread_num() == 0)
 							std::cout << "Number of opm threads working: " << omp_get_num_threads() << std::endl;*/
 
-						avgNumNeigh += float(neigs[i].size() + neigs_mirror[i].size()) / particles.size();
+						avgNumNeigh += float(neigs[i].size() + neigs_mirror[i].size()) / nActiveParticles;
 
 						double minDistance = h;
 
@@ -662,8 +668,8 @@ namespace Fluid
 				{
 					AutoTimer at(g_timer, "simulate - calculate time step");
 					dt = 9999;
-					for (auto& p1 : particles)
-					{
+					for (int i = 0; i < nActiveParticles; i++) {
+						const particle& p1 = particles[i];
 						dt = std::min(dt, p1.get_dt<ISOTHERMAL>(gamma, h, alpha, beta));
 					}
 					dt *= cfl;
@@ -676,8 +682,9 @@ namespace Fluid
 					for (auto& so : solids)
 						so.particles.clear();
 
-					for (auto& p1 : particles)
-					{
+					for (int i = 0; i < nActiveParticles; i++){
+						particle& p1 = particles[i];
+
 						if (t < externalTime) {
 							p1.accel += (externalAcceleration + externalForce / p1.mass)/** (p1.pos.y < 0.5 ? -1. : 1.)*/;
 						}
@@ -722,7 +729,8 @@ namespace Fluid
 					}
 					
 					// apply boundary conditions
-					for (auto& p1 : particles){
+					for (int i = 0; i < nActiveParticles; i++) {
+						particle& p1 = particles[i];
 						for (int k = 0; k < D; k++) {
 							if (boundaryTypes[k][0] == BoundaryType::periodic) {
 								while (p1.pos[k] < domain[k][0])
@@ -771,31 +779,30 @@ namespace Fluid
 							}
 						}
 					}
-					std::erase_if(particles, [](particle const& p) {return p.state & psRemoved; });
+
+					partitionParticles();
 				}
 
 
 				// create new particles on inflow edges			
 				int nSpawnParticles = 10;
-				double particleMass = 1. / 1400;
-				double posOffset = 0.01;
+				double wallOffset = 0.01;
 				for (int k = 0; k < D; ++k) {
 					if (boundaryTypes[k][0] == BoundaryType::inflow) {
-						size_t offset = particles.size();
-						if (maxParticles - offset >= nSpawnParticles) {
-							particles.resize(offset + nSpawnParticles);
-							for (int i = 0; i < nSpawnParticles; i++) {
-								vec<D> pos;
-								pos[k] = domain[k][0] + posOffset;
-								pos[1 - k] = domain[1 - k][0] + (double)i / (nSpawnParticles - 1) * (domain[1 - k][1] - domain[1 - k][0]);
-								particles[offset + i] = { pos,{ 0, 0 },{ 0, 0 }, particleMass, 0, 0, 1, 0 };
+						size_t nMaxParticles = particles.size();
+						if (nMaxParticles - nActiveParticles >= nSpawnParticles) {
+							for (int i = nActiveParticles; i < nActiveParticles+nSpawnParticles; i++) {				
+								particles[i].pos[k] = domain[k][0] + wallOffset;
+								particles[i].pos[1 - k] = domain[1 - k][0] + ((rand() % 10000) / 10000.0) * (domain[1 - k][1] - domain[1 - k][0]);
+								particles[i].vel = { 0,0 };
+								particles[i].state &= (~psRemoved);
 							}
 						}
+						nMaxParticles += nSpawnParticles;
 					}
 				}
 				
-
-
+			
 				t += dt;
 
 				if ((int)(t / logTimeStep) != (int)((t - dt) / logTimeStep))

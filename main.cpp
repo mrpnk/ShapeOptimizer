@@ -158,8 +158,13 @@ void windchannel()
 	sph.setExternalAcceleration({ 0,0 });
 	sph.setExternalForce({ 0.01,0 });
 
-	sph.createParticles(1400, 1.0);
-	sph.createSolid();
+
+	std::vector<vec<2>> dish = { {-7, -12}, { -2,-9 }, { 0,-5 }, { 0,0 }, { 0,5 }, { -2,9 }, { -7,12 } };
+	std::vector<vec<2>> wing = { {-20, 3},{-15, 5},{-10, 5},{-5, 3},{0, 0},{5, -5} };
+	std::vector<vec<2>> torpedo = { {-7, -12}, { -2,-9 }, { 0,-5 }, { 0,0 }, { 0,5 }, { -2,9 }, { -7,12 } };
+
+	sph.createParticles(1000, 1.0);
+	sph.createSolid(wing);
 
 
 	StreamFileWriter pfw;
@@ -170,7 +175,7 @@ void windchannel()
 	sfw.setBlockShape({ fileSolidData<2>::numElements() });
 	sfw.open("solids.binary");
 
-	sph.simulate<false, true>(pfw, sfw, 5, 4.0, 0.8, 0.005);
+	sph.simulate<false, true>(pfw, sfw, 8, 4.0, 0.8, 0.005);
 
 
 
