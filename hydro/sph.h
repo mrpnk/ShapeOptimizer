@@ -15,6 +15,7 @@
 
 #include <omp.h>
 
+
 namespace Fluid
 {
 	template<int d> struct m4spline
@@ -25,17 +26,17 @@ namespace Fluid
 	};
 	template<> struct m4spline<1>
 	{
-		double operator()(double r, double h)
+		double operator()(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 1 - s * s * 3 / 2 + s * s*s * 3 / 4 : s <= 2 ? pow(2 - s, 3) / 4 : 0) * (2 / (3 * h));
 		}
-		double der(double r, double h)
+		double der(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? -s * 3 + s * s * 9 / 4 : s <= 2 ? -pow(2 - s, 2) * 3 / 4 : 0) * (2 / (3 * h*h));
 		}
-		double cumul(double r, double h)
+		double cumul(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 4 / 3 * 2 - 2 / 3 * pow(s, 3) + 1 / 4 * pow(s, 4)
@@ -45,17 +46,17 @@ namespace Fluid
 	};
 	template<> struct m4spline<2>
 	{
-		double operator()(double r, double h)
+		double operator()(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 1 - s * s * 3 / 2 + s * s*s * 3 / 4 : s <= 2 ? pow(2 - s, 3) / 4 : 0) * (10 / (7 * pi * h*h));
 		}
-		double der(double r, double h)
+		double der(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? -s * 3 + s * s * 9 / 4 : s <= 2 ? -pow(2 - s, 2) * 3 / 4 : 0) * (10 / (7 * pi * h*h*h));
 		}
-		double cumul(double r, double h)
+		double cumul(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 10 / 7 * pow(s, 2) - 15 / 14 * pow(s, 4) + 3 / 7 * pow(s, 5)
@@ -65,17 +66,17 @@ namespace Fluid
 	};
 	template<> struct m4spline<3>
 	{
-		double operator()(double r, double h)
+		double operator()(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 1 - s * s * 3 / 2 + s * s*s * 3 / 4 : s <= 2 ? pow(2 - s, 3) / 4 : 0) / (h*h*h*pi);
 		}
-		double der(double r, double h)
+		double der(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? -s * 3 + s * s * 9 / 4 : s <= 2 ? -pow(2 - s, 2) * 3 / 4 : 0) / (h*h*h*h*pi);
 		}
-		double cumul(double r, double h)
+		double cumul(double r, double h) const
 		{
 			double s = r / h;
 			return (s <= 1 ? 4 / 3 * pow(s, 3) - 6 / 5 * pow(s, 5) + 1 / 2 * pow(s, 6)
@@ -95,8 +96,10 @@ namespace Fluid
 		double gravE;
 		double group;
 		double id;
+		double state;
+
 		static inline size_t numElements() {
-			return { D + D + 1 + 1 + 3 + 2 };
+			return { D + D + 1 + 1 + 3 + 3 };
 		}
 	};
 	template<int D>
@@ -107,25 +110,27 @@ namespace Fluid
 		double omega;
 		vec<D> dragForce;
 		double group;
-
+		
 		static inline size_t numElements() {
 			return { D + D + 2 + D + 1};
 		}
 	};
 	
+	enum class BoundaryType
+	{
+		outflow,  // removes particles that move out
+		inflow,   // respawns removed particles uniformly
+		periodic, // moves in again on the other side
+		wall      // keeps particles in the domain
+	};
 
+	enum particleState : unsigned int{
+		psRemoved = 1u
+	};
+	
 	template<int D>
 	class SPH
 	{
-	public:
-		enum BoundaryType
-		{
-			outflow,
-			periodic,
-			wall
-		};
-
-	private:
 		double gamma; // adiabatic index
 		const double G = 8 * 2;
 		double alpha; // volume viscosity
@@ -133,7 +138,8 @@ namespace Fluid
 		std::array<vec<2>, D> domain;
 		std::array<double, D> domainSpan;
 
-		m4spline<D> kernel = m4spline<D>();
+		const m4spline<D> kernel = m4spline<D>();
+
 
 		struct particle{
 			vec<D> pos;
@@ -147,6 +153,7 @@ namespace Fluid
 			double delVabs;
 			int    group=0; // 0=gas. 1,2..=solids
 			int	   id; // inside their group
+			particleState state;
 
 			template<bool ISOTHERMAL>
 			inline double get_c(double gamma) const
@@ -170,6 +177,10 @@ namespace Fluid
 			static inline const double& getMass(const particle& p) { return p.mass; }
 		};
 
+		std::vector<particle> particles;
+		KDTree<D, particle> kdt;
+		int maxParticles = 0;
+
 		struct solid {
 			vec<D> com; // center of mass
 			vec<D> vel; // linear velocity
@@ -180,18 +191,15 @@ namespace Fluid
 			double momentOfInertia;
 
 			int group;
-			vec<2> dragForce;
+			vec<D> dragForce;
 
-			bool positionLocked = false;
+			vec<D> positionLocked;
 			bool rotationLocked = false;
-			
+
 			std::vector<particle*> particles; // temporarily pointing inside SPH::particles
 			std::vector<vec<2>> subpositions; // not nessecariy in the same order as "particles"
 		};
 		std::vector<solid> solids;
-
-		std::vector<particle> particles;
-		KDTree<D, particle> kdt;
 
 		std::array<std::array<BoundaryType,2>, D> boundaryTypes;
 
@@ -248,8 +256,7 @@ namespace Fluid
 			kdt.construct(particles.begin(), particles.end());
 		}
 
-		void findNeighbours(const double h, const double grav_angle,
-			const bool _enable_grav_,
+		void findNeighbours(const double h, const double grav_angle, const bool _enable_grav_,
 			std::vector<std::vector<srn>>& neigs,
 			std::vector<std::vector<srv>>& neigs_mirror,
 			std::vector<std::vector<srm>>& masses)
@@ -271,7 +278,7 @@ namespace Fluid
 				
 				neigs_mirror[i].clear();
 				for (int k = 0; k < D; k++) {
-					if (boundaryTypes[k][0] == periodic) {
+					if (boundaryTypes[k][0] == BoundaryType::periodic) {
 						if (domain[k][1] - particles[i].pos[k] < r)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] -= domainSpan[k];
@@ -317,7 +324,7 @@ namespace Fluid
 					else mirrored[k] = 0;
 
 					// For wall boundaries we let each particle see its phantom mirrored version
-					if (boundaryTypes[k][1] == wall) {
+					if (boundaryTypes[k][1] == BoundaryType::wall) {
 						if (domain[k][1] - particles[i].pos[k] < r/2)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] = 2*domain[k][1] - vpos[k];
@@ -327,7 +334,7 @@ namespace Fluid
 							neigs_mirror[i].push_back(srv{ &particles[i],conn,dist });
 						}
 					}
-					if (boundaryTypes[k][0] == wall) {
+					if (boundaryTypes[k][0] == BoundaryType::wall) {
 						if (particles[i].pos[k] - domain[k][0] < r/2)
 						{
 							vec<D> vpos = particles[i].pos; vpos[k] = 2 * domain[k][0] - vpos[k];
@@ -347,8 +354,9 @@ namespace Fluid
 			}
 		}
 
-		void computeDensity(double h, std::vector<std::vector<srn>> neigs,
-			std::vector<std::vector<srv>> neigs_mirror, bool isothermal)
+		void computeDensity(double h, bool isothermal,
+			std::vector<std::vector<srn>> const& neigs,
+			std::vector<std::vector<srv>> const& neigs_mirror)
 		{
 			AutoTimer at(g_timer, "computeDensity");
 			for (int i = 0; i < particles.size(); i++)
@@ -375,7 +383,7 @@ namespace Fluid
 			}
 		}
 
-		void logParticles(CubeFileWriter& fw, double time)
+		void logParticles(StreamFileWriter& fw, double time)
 		{
 			AutoTimer at(g_timer, "logParticles");
 
@@ -394,15 +402,14 @@ namespace Fluid
 				{
 					return fileParticleData{ p.pos, p.vel, p.density, p.pressure,
 						p.energy * p.mass, p.vel.lengthsq() * (0.5 * p.mass), 0/*grav_pot(p.pos) * p.mass*/ ,
-						(double)p.group, (double)p.id};
+						(double)p.group, (double)p.id, (double)p.state};
 				});
 
-			fw.newLayer();
-			fw.writeData(data);
-			fw.writeHeader(time, 0);	
+			fw.writeBlocks(data);
+			fw.finishSection(time);
 		}
 
-		void logSolids(CubeFileWriter& fw, double time)
+		void logSolids(StreamFileWriter& fw, double time)
 		{
 			AutoTimer at(g_timer, "logSolids");
 
@@ -413,9 +420,8 @@ namespace Fluid
 						so.dragForce, (double)so.group };
 				});
 
-			fw.newLayer();
-			fw.writeData(data);
-			fw.writeHeader(time, 0);
+			fw.writeBlocks(data);
+			fw.finishSection(time);
 		}
 
 	public:
@@ -437,7 +443,7 @@ namespace Fluid
 			for (int d = 0; d < D; ++d)
 				domainSpan[d] = domain[d][1] - domain[d][0];
 			for (int d = 0; d < D; ++d)
-				if ((boundaryTypes[d][0] == periodic) != ((boundaryTypes[d][1] == periodic))) {
+				if ((boundaryTypes[d][0] == BoundaryType::periodic) != ((boundaryTypes[d][1] == BoundaryType::periodic))) {
 					std::cout << "WARNING: Dimension " << d << ": opposite sides must both have periodic boundary conditions.";
 					problemFound = true;
 				}
@@ -458,8 +464,7 @@ namespace Fluid
 			// The mass has no effect if all particles have the same mass
 			size_t offset = particles.size();
 			particles.resize(offset+numParticles);
-			for (int i = 0; i < numParticles; i++)
-			{
+			for (int i = 0; i < numParticles; i++){
 				auto x = ((rand() % 10000) / 10000.0);
 				auto y = ((rand() % 10000) / 10000.0);
 				particles[offset + i] = { { x, y },{ 0, 0 },{ 0, 0 }, totalMass / numParticles, 0, 0, 1, 0 };
@@ -473,10 +478,11 @@ namespace Fluid
 
 			vec<2> ori = { 0.5,0.5 };
 			so.subpositions = { {-1.5,-2.5}, {-0.5,-1.8}, {0,-1}, {0,0}, {0,1}, {-0.5,1.8}, {-1.5,2.5} };
+			
 			size_t offset = particles.size();
 			particles.resize(offset + so.subpositions.size());
 			for (int i = 0; i < so.subpositions.size(); i++) {
-				particles[offset + i] = { ori +(so.subpositions[i]*0.05),{ 0, 0 },{ 0, 0 },
+				particles[offset + i] = { ori+(so.subpositions[i]*0.05),{ 0, 0 },{ 0, 0 },
 					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
 				particles[offset + i].group = gr;
 				particles[offset + i].id = i;
@@ -499,7 +505,7 @@ namespace Fluid
 			}
 
 			// only rotate around COM, dont move
-			so.positionLocked = true;
+			so.positionLocked = {1,0};
 			so.rotationLocked = true;
 
 			solids.push_back(so);
@@ -512,25 +518,27 @@ namespace Fluid
 		size_t getNumSolids() { return solids.size(); }
 
 		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
-		void simulate(CubeFileWriter& pfw, CubeFileWriter& sfw, const double simulTime, 
+		void simulate(StreamFileWriter& pfw, StreamFileWriter& sfw, const double simulTime,
 			const double eta, const double cfl = 1., const double logTimeStep = 0.01)
 		{
 			using namespace std;
 
 			cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
 
+			maxParticles = particles.size();
+
 			const double grav_angle = 0.0001;
 
 			double t = 0;
 			double h;
 
-			std::vector<std::vector<srn>> neigs(particles.size());
-			std::vector<std::vector<srv>> neigs_mirror(particles.size());
-			std::vector<std::vector<srm>> masses(particles.size());
+			std::vector<std::vector<srn>> neigs(maxParticles);
+			std::vector<std::vector<srv>> neigs_mirror(maxParticles);
+			std::vector<std::vector<srm>> masses(maxParticles);
 
 			h = get_h(eta);
 			findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
-			computeDensity(h, neigs, neigs_mirror, ISOTHERMAL);
+			computeDensity(h, ISOTHERMAL, neigs, neigs_mirror);
 			
 			logParticles(pfw, t);
 			logSolids(sfw, t);
@@ -543,17 +551,17 @@ namespace Fluid
 				AutoTimer at(g_timer, "simulate - time step");
 
 				h = get_h(eta);
-				
+
 				// find neighbours
 				findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
 
 				// compute density and pressure
-				computeDensity(h, neigs, neigs_mirror, ISOTHERMAL);
+				computeDensity(h, ISOTHERMAL, neigs, neigs_mirror);
 
 				// compute energy change and acceleration
 				{
 					AutoTimer at(g_timer, "simulate - compute change");
-					#pragma omp parallel for 
+#pragma omp parallel for 
 					for (int i = 0; i < particles.size(); i++)
 					{
 						/*if (t == 0 && i == 0 && omp_get_thread_num() == 0)
@@ -575,15 +583,15 @@ namespace Fluid
 							auto vij = (p1.vel - p2.vel);
 							auto rijn = dist == 0 ? rij : rij / dist;
 							double kd = kernel.der(dist, h);
-							
-							get_viscPiLambda(Pi,lambda,p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
-						
+
+							get_viscPiLambda(Pi, lambda, p1.get_c<ISOTHERMAL>(gamma), p2.get_c<ISOTHERMAL>(gamma), p1.density, p2.density, vij, rijn);
+
 							accel_acc += rijn * -p2.mass * (p1.pressure / (p1.density * p1.density) + p2.pressure / (p2.density * p2.density)) * kd;
 							visc_acc += rijn * -p2.mass * Pi * kd;
 
 							inte_acc += vij.dot(rijn) * p2.mass * kd;
 							inte_acc_visc += lambda * p2.mass * kd;
-							
+
 							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd;
 						};
 						for (auto p2p : neigs_mirror[i])
@@ -603,7 +611,7 @@ namespace Fluid
 							inte_acc += vij.dot(rijn) * p2.mass * kd;
 							inte_acc_visc += lambda * p2.mass * kd;
 
-							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd; 
+							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd;
 						};
 						if (GRAVITATION)
 						{
@@ -635,18 +643,18 @@ namespace Fluid
 
 				// update energy and position
 				{
+					AutoTimer at(g_timer, "simulate - apply change");
+
 					for (auto& so : solids)
 						so.particles.clear();
 
-					AutoTimer at(g_timer, "simulate - apply change");
 					for (auto& p1 : particles)
 					{
 						if (t < externalTime) {
 							p1.accel += (externalAcceleration + externalForce / p1.mass)/** (p1.pos.y < 0.5 ? -1. : 1.)*/;
 						}
 
-
-						if (p1.group != 0){
+						if (p1.group != 0) {
 							solids[p1.group - 1].particles.push_back(&p1);
 							continue;
 						}
@@ -657,7 +665,7 @@ namespace Fluid
 							p1.vel += p1.accel * dt;
 						}
 					}
-					for (solid& so : solids) 
+					for (solid& so : solids)
 					{
 						// compute linear and angular force (torque) from particle accelerations
 						so.dragForce = { 0,0 };
@@ -669,11 +677,10 @@ namespace Fluid
 						}
 
 						// move and rotate the solid
-						if (!so.positionLocked) {
-							auto linAccel = so.dragForce / so.totalMass;
-							so.com += so.vel * dt;
-							so.vel += linAccel * dt;
-						}
+						auto linAccel = so.dragForce / so.totalMass * (vec<D>(1)-so.positionLocked);
+						so.com += so.vel * dt;
+						so.vel += linAccel * dt;
+						
 						if (!so.rotationLocked) {
 							auto angAccel = totalTorque / so.momentOfInertia;
 							so.angle += so.omega * dt;
@@ -685,25 +692,49 @@ namespace Fluid
 							p->pos = so.com + so.subpositions[p->id].rotate(so.angle);
 						}
 					}
-					for (auto& p1 : particles)
-					{
-						// apply boundary conditions
+					
+					// apply boundary conditions
+					for (auto& p1 : particles){
 						for (int k = 0; k < D; k++) {
-							if (boundaryTypes[k][0] == periodic) {
+							if (boundaryTypes[k][0] == BoundaryType::periodic) {
 								while (p1.pos[k] < domain[k][0])
 									p1.pos[k] += domainSpan[k];
 								while (p1.pos[k] > domain[k][1])
 									p1.pos[k] -= domainSpan[k];
 								continue;
 							}
-							if (boundaryTypes[k][0] == wall) {
+							if (boundaryTypes[k][0] == BoundaryType::wall) {
 								if (p1.pos[k] < domain[k][0]) {
 									p1.pos[k] = domain[k][0];
 									p1.vel[k] *= -1;
 									p1.accel[k] = 0;
 								}
 							}
-							if (boundaryTypes[k][1] == wall) {
+							if (boundaryTypes[k][1] == BoundaryType::wall) {
+								if (p1.pos[k] > domain[k][1]) {
+									p1.pos[k] = domain[k][1];
+									p1.vel[k] *= -1;
+									p1.accel[k] = 0;
+								}
+							}
+							if (boundaryTypes[k][0] == BoundaryType::outflow) {
+								if (p1.pos[k] < domain[k][0]) {
+									p1.state |= psRemoved;
+								}
+							}
+							if (boundaryTypes[k][1] == BoundaryType::outflow) {
+								if (p1.pos[k] > domain[k][1]) {
+									p1.state |= psRemoved;
+								}
+							}
+							if (boundaryTypes[k][0] == BoundaryType::inflow) {
+								if (p1.pos[k] < domain[k][0]) {
+									p1.pos[k] = domain[k][0];
+									p1.vel[k] *= -1;
+									p1.accel[k] = 0;
+								}
+							}
+							if (boundaryTypes[k][1] == BoundaryType::inflow) {
 								if (p1.pos[k] > domain[k][1]) {
 									p1.pos[k] = domain[k][1];
 									p1.vel[k] *= -1;
@@ -712,7 +743,30 @@ namespace Fluid
 							}
 						}
 					}
+					std::erase_if(particles, [](particle const& p) {return p.state & psRemoved; });
 				}
+
+
+				// create new particles on inflow edges			
+				int nSpawnParticles = 10;
+				double particleMass = 1. / 400;
+				double posOffset = 0.1;
+				for (int k = 0; k < D; ++k) {
+					if (boundaryTypes[k][0] == BoundaryType::inflow) {
+						size_t offset = particles.size();
+						if (maxParticles - offset >= nSpawnParticles) {
+							particles.resize(offset + nSpawnParticles);
+							for (int i = 0; i < nSpawnParticles; i++) {
+								vec<D> pos;
+								pos[k] = domain[k][0] + posOffset;
+								pos[1 - k] = domain[1 - k][0] + (double)i / (nSpawnParticles - 1) * (domain[1 - k][1] - domain[1 - k][0]);
+								particles[offset + i] = { pos,{ 0, 0 },{ 0, 0 }, particleMass, 0, 0, 1, 0 };
+							}
+						}
+					}
+				}
+				
+
 
 				t += dt;
 
@@ -723,11 +777,10 @@ namespace Fluid
 				}
 				counter++;
 
-				{
-					AutoTimer at(g_timer, "simulate - console output");
-					if (counter % 100 == 0)
-						std::cout << "step " << counter << ", t=" << t << " / " << simulTime << std::endl;
-				}
+				if (counter % 100 == 0)
+					std::cout << "step " << counter << ", t=" << t << " / " << simulTime << std::endl;
+
+
 			}
 
 			cout << "Simulation finished. Timesteps: " << counter << std::endl;

@@ -149,6 +149,97 @@ public:
 	}
 };
 
+// Writes a stream of blocks of specified dimensions. The stream can be organized in sections
+class StreamFileWriter
+{
+	std::vector<size_t> dim;
+	std::vector<double> annotations;
+	std::fstream myfile;
+
+	std::vector<int> sectionSizes;
+	int currentSectionSize;
+
+	void writeHeader() {
+		auto oldpos = myfile.tellp();
+
+		size_t d = dim.size();
+		myfile.seekp(0);
+		myfile.write((char*)&d, sizeof(size_t));
+		myfile.write((char*)&dim[0], sizeof(size_t) * d);
+
+		size_t s = sectionSizes.size();
+		myfile.write((char*)&s, sizeof(size_t));
+
+		if(oldpos!=0)
+			myfile.seekp(oldpos);
+	}
+	void writeFooter() {
+		myfile.write((char*)&annotations[0], sizeof(double) * annotations.size());
+		myfile.write((char*)&sectionSizes[0], sizeof(int) * sectionSizes.size());
+	}
+
+public:
+	void setBlockShape(std::vector<size_t> blockDimensions)
+	{
+		dim = blockDimensions;
+		dim.insert(dim.begin(), 0);
+	}
+	void open(std::string filename)
+	{
+		myfile = std::fstream(filename, std::ios::out | std::ios::binary);
+		writeHeader();
+		currentSectionSize = 0;
+	}
+
+	template<typename T>
+	void writeBlocks(const std::vector<T>& blocks)
+	{
+		// appends data to the current section
+		if (!blocks.empty()) {
+			myfile.write((char*)&blocks[0], sizeof(T) * blocks.size());
+			dim[0] += blocks.size();
+			currentSectionSize += blocks.size();
+		}
+	}
+
+	void finishSection(double annotation)
+	{
+		// Binds all blocks written since the last call or the beginning into a section.
+		sectionSizes.push_back(currentSectionSize);
+		annotations.push_back(annotation);
+		currentSectionSize = 0;
+	}
+
+	//void annotate(double value, int d, int i = -1)
+	//{
+	//	// labels a header in dimension d with index i
+	//	if (i < 0)
+	//		i = annotations[d].size() - 1;
+	//	annotations[d][i] = value;
+	//}
+
+	void close()
+	{
+		if (myfile.is_open())
+		{
+			// Update the dimension in the file
+			writeHeader();
+			writeFooter();
+			myfile.close();
+		}
+		else {
+			std::cout << "WARNING: The file has never been opened." << std::endl;
+		}
+	}
+
+	void reset()
+	{
+		dim.clear();
+		annotations.clear();
+		myfile.clear();
+	}
+};
+
 class NestFileWriter
 {
 	std::fstream myfile;

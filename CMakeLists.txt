@@ -12,7 +12,7 @@ set_property(TARGET ShapeOptimizer PROPERTY CXX_STANDARD 20)
 
 
 find_package(OpenMP REQUIRED)
-if(OpenMP_CXX_FOUND)
+if(OpenMP_CXX_FOUND AND false)
     message("OpenMP was found!")
     target_link_libraries(ShapeOptimizer PUBLIC OpenMP::OpenMP_CXX)
 endif()

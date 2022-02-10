@@ -146,13 +146,13 @@ public:
 
 void windchannel()
 {
-	using sph_t = Fluid::SPH<2>;
-	sph_t sph;
+	using namespace Fluid;
+	SPH<2> sph;
 	sph.init(1.4, 1, 16); // dry air, 0 degree Celsius, normal pressure
 	
 	sph.setDomain({ {{0,1},{0,1}} },
-		{ { {sph_t::periodic, sph_t::periodic},
-			{sph_t::wall, sph_t::wall} } });
+		{ { {BoundaryType::inflow, BoundaryType::outflow},
+			{BoundaryType::wall, BoundaryType::wall} } });
 
 	sph.setExternalTime(1);
 	sph.setExternalAcceleration({ 0,0 });
@@ -162,15 +162,15 @@ void windchannel()
 	sph.createSolid();
 
 
-	CubeFileWriter pfw;
-	pfw.setShape({ sph.getNumParticles(), Fluid::fileParticleData<2>::numElements()});
+	StreamFileWriter pfw;
+	pfw.setBlockShape({ fileParticleData<2>::numElements()});
 	pfw.open("particles.binary");
 
-	CubeFileWriter sfw;
-	sfw.setShape({ sph.getNumSolids(), Fluid::fileSolidData<2>::numElements() });
+	StreamFileWriter sfw;
+	sfw.setBlockShape({ fileSolidData<2>::numElements() });
 	sfw.open("solids.binary");
 
-	sph.simulate<false, true>(pfw, sfw, 2, 1.0, 0.8, 0.005);
+	sph.simulate<false, true>(pfw, sfw, 5, 1.0, 0.8, 0.005);
 
 
 
@@ -217,7 +217,7 @@ int main(){
 
 	
 	g_timer.print();
-	std::cin.get();
+	//std::cin.get();
 
 	return 0;
 }

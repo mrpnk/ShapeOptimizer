@@ -35,7 +35,8 @@ template<> struct vec<2> : public vec_base
 {
 	double x = 0, y = 0;
 	
-	vec(double x= 0, double y=0) : x{ x }, y{ y } {}
+	vec(double xy = 0) : x{ xy }, y{ xy } {}
+	vec(double x, double y) : x{ x }, y{ y } {}
 
 	inline double length() const
 	{
@@ -81,6 +82,13 @@ template<> struct vec<2> : public vec_base
 		vec<2> ret = *this;
 		ret.x -= r.x;
 		ret.y -= r.y;
+		return ret;
+	}
+	vec<2> operator*(vec<2> const& r) const
+	{
+		vec<2> ret = *this;
+		ret.x *= r.x;
+		ret.y *= r.y;
 		return ret;
 	}
 	vec<2> operator*(double r) const
