@@ -158,7 +158,7 @@ void windchannel()
 	sph.setExternalAcceleration({ 0,0 });
 	sph.setExternalForce({ 0.01,0 });
 
-	sph.createParticles(400, 1.0);
+	sph.createParticles(1400, 1.0);
 	sph.createSolid();
 
 
@@ -170,7 +170,7 @@ void windchannel()
 	sfw.setBlockShape({ fileSolidData<2>::numElements() });
 	sfw.open("solids.binary");
 
-	sph.simulate<false, true>(pfw, sfw, 5, 1.0, 0.8, 0.005);
+	sph.simulate<false, true>(pfw, sfw, 5, 4.0, 0.8, 0.005);
 
 
 
@@ -211,13 +211,13 @@ int main(){
 	std::cout << "Max number of OMP threads: " << omp_get_max_threads() << std::endl;
 	
 	srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-	//srand(3245);
+	srand(3245);
 
 	windchannel();
 
 	
 	g_timer.print();
-	//std::cin.get();
+	std::cin.get();
 
 	return 0;
 }

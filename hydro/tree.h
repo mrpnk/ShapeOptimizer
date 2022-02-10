@@ -22,7 +22,7 @@ template<int D> struct vec : public vec_base
 {
 	inline double length() const;
 	inline vec<D>& normalize();
-	double dot(vec<D> r) const;
+	inline double dot(vec<D> r) const;
 
 	vec<D> operator+(const vec<D>& r) const;
 	vec<D> operator*(double r) const;

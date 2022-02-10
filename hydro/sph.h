@@ -211,12 +211,16 @@ namespace Fluid
 		using srm = typename decltype(kdt)::search_result_mass;
 
 
-		double get_h(double nu)
+		double get_h(double eta)
 		{
 			// Returns the kernel size for this timestep
 			AutoTimer at(g_timer, "get_h");
 
+
+			// avg is the mean of the minimal distances
 			double avg = 0;
+
+		//	kdt.searchNumber()
 
 			#pragma omp parallel for reduction(+:avg)
 			for (int i = 0; i < particles.size(); i++)
@@ -231,10 +235,13 @@ namespace Fluid
 				}
 				avg += md;
 			}
-			return nu * avg / particles.size();
+
+
+			return eta * avg / particles.size();
 		}
 
-		void get_viscPiLambda(double& out_Pi, double& out_lambda,
+	
+		inline void get_viscPiLambda(double& out_Pi, double& out_lambda,
 			double c_i, double c_j, double rho_i, double rho_j, vec<D> v_ij, vec<D> e_ij)
 		{
 			auto dot = v_ij.dot(e_ij);
@@ -407,6 +414,9 @@ namespace Fluid
 
 			fw.writeBlocks(data);
 			fw.finishSection(time);
+
+
+			
 		}
 
 		void logSolids(StreamFileWriter& fw, double time)
@@ -477,12 +487,12 @@ namespace Fluid
 			so.group = gr;
 
 			vec<2> ori = { 0.5,0.5 };
-			so.subpositions = { {-1.5,-2.5}, {-0.5,-1.8}, {0,-1}, {0,0}, {0,1}, {-0.5,1.8}, {-1.5,2.5} };
+			so.subpositions = { {-7,-12}, {-2,-9}, {0,-5}, {0,0}, {0,5}, {-2,9}, {-7,12} };
 			
 			size_t offset = particles.size();
 			particles.resize(offset + so.subpositions.size());
 			for (int i = 0; i < so.subpositions.size(); i++) {
-				particles[offset + i] = { ori+(so.subpositions[i]*0.05),{ 0, 0 },{ 0, 0 },
+				particles[offset + i] = { ori + (so.subpositions[i] * vec<2>{-1,1}*0.01),{0, 0},{0, 0},
 					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
 				particles[offset + i].group = gr;
 				particles[offset + i].id = i;
@@ -521,6 +531,9 @@ namespace Fluid
 		void simulate(StreamFileWriter& pfw, StreamFileWriter& sfw, const double simulTime,
 			const double eta, const double cfl = 1., const double logTimeStep = 0.01)
 		{
+			std::ofstream etafile("etas.txt");
+
+
 			using namespace std;
 
 			cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
@@ -543,14 +556,14 @@ namespace Fluid
 			logParticles(pfw, t);
 			logSolids(sfw, t);
 
-			double neighbourTime = 0;
+			double avgMinDistance;
 			int counter = 0;
 			double dt;
 			while (t < simulTime)
 			{
 				AutoTimer at(g_timer, "simulate - time step");
 
-				h = get_h(eta);
+			//	h = get_h(eta);
 
 				// find neighbours
 				findNeighbours(h, grav_angle, GRAVITATION, neigs, neigs_mirror, masses);
@@ -561,11 +574,18 @@ namespace Fluid
 				// compute energy change and acceleration
 				{
 					AutoTimer at(g_timer, "simulate - compute change");
-#pragma omp parallel for 
+					float avgNumNeigh = 0;
+					avgMinDistance = 0;
+
+					#pragma omp parallel for 
 					for (int i = 0; i < particles.size(); i++)
 					{
 						/*if (t == 0 && i == 0 && omp_get_thread_num() == 0)
 							std::cout << "Number of opm threads working: " << omp_get_num_threads() << std::endl;*/
+
+						avgNumNeigh += float(neigs[i].size() + neigs_mirror[i].size()) / particles.size();
+
+						double minDistance = h;
 
 						auto& p1 = particles[i];
 						vec<D> accel_acc;
@@ -579,6 +599,8 @@ namespace Fluid
 						{
 							const particle& p2 = *p2p.neigh;
 							double dist = p2p.dist;
+							if(dist>0)
+							minDistance = std::min(minDistance, dist);
 							auto rij = (p1.pos - p2.pos);
 							auto vij = (p1.vel - p2.vel);
 							auto rijn = dist == 0 ? rij : rij / dist;
@@ -593,13 +615,14 @@ namespace Fluid
 							inte_acc_visc += lambda * p2.mass * kd;
 
 							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd;
-						};
-						for (auto p2p : neigs_mirror[i])
+						}
+						for (const srv& p2p : neigs_mirror[i])
 						{
 							const particle& p2 = *p2p.neigh;
 							auto rij = p2p.relPos * (-1);
 							auto vij = (p1.vel - p2.vel);
 							double dist = rij.length();
+							minDistance = std::min(minDistance, dist);
 							auto rijn = dist == 0 ? rij : rij * (1 / dist);
 							double kd = kernel.der(dist, h);
 
@@ -613,7 +636,7 @@ namespace Fluid
 
 							delV_acc += vij.dot(rijn) * p2.mass / p2.density * kd;
 						};
-						if (GRAVITATION)
+						if constexpr (GRAVITATION)
 						{
 							for (const srm& cm : masses[i])
 							{
@@ -627,8 +650,13 @@ namespace Fluid
 						p1.delVabs = abs(delV_acc);
 						p1.accel = accel_acc + visc_acc + grav_acc;
 						p1.energyDer = p1.pressure / (p1.density * p1.density) * inte_acc + inte_acc_visc;
+						avgMinDistance += minDistance;
 					}
+					
+					etafile << avgNumNeigh << " " << h << " " << avgMinDistance<<std::endl;
 				}
+
+				
 
 				// calculate time step
 				{
@@ -749,8 +777,8 @@ namespace Fluid
 
 				// create new particles on inflow edges			
 				int nSpawnParticles = 10;
-				double particleMass = 1. / 400;
-				double posOffset = 0.1;
+				double particleMass = 1. / 1400;
+				double posOffset = 0.01;
 				for (int k = 0; k < D; ++k) {
 					if (boundaryTypes[k][0] == BoundaryType::inflow) {
 						size_t offset = particles.size();
@@ -780,10 +808,13 @@ namespace Fluid
 				if (counter % 100 == 0)
 					std::cout << "step " << counter << ", t=" << t << " / " << simulTime << std::endl;
 
-
+				// estimate smoothing length for the next step
+				h = eta * avgMinDistance / particles.size();
 			}
 
 			cout << "Simulation finished. Timesteps: " << counter << std::endl;
+
+			etafile.close();
 		}
 
 	};
