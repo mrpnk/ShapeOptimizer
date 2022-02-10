@@ -179,49 +179,35 @@ class StreamFileWriter
 	}
 
 public:
-	void setBlockShape(std::vector<size_t> blockDimensions)
-	{
+	void setBlockShape(std::vector<size_t> blockDimensions){
 		dim = blockDimensions;
 		dim.insert(dim.begin(), 0);
 	}
-	void open(std::string filename)
-	{
+	void open(std::string filename){
 		myfile = std::fstream(filename, std::ios::out | std::ios::binary);
 		writeHeader();
 		currentSectionSize = 0;
 	}
 
 	template<typename T>
-	void writeBlocks(const std::vector<T>& blocks)
-	{
+	void writeBlocks(const std::vector<T>& blocks){
 		// appends data to the current section
-		if (!blocks.empty()) {
+		if (!blocks.empty() && myfile.is_open()) {
 			myfile.write((char*)&blocks[0], sizeof(T) * blocks.size());
 			dim[0] += blocks.size();
 			currentSectionSize += blocks.size();
 		}
 	}
 
-	void finishSection(double annotation)
-	{
+	void finishSection(double annotation){
 		// Binds all blocks written since the last call or the beginning into a section.
 		sectionSizes.push_back(currentSectionSize);
 		annotations.push_back(annotation);
 		currentSectionSize = 0;
 	}
 
-	//void annotate(double value, int d, int i = -1)
-	//{
-	//	// labels a header in dimension d with index i
-	//	if (i < 0)
-	//		i = annotations[d].size() - 1;
-	//	annotations[d][i] = value;
-	//}
-
-	void close()
-	{
-		if (myfile.is_open())
-		{
+	void close(){
+		if (myfile.is_open()){
 			// Update the dimension in the file
 			writeHeader();
 			writeFooter();
@@ -232,8 +218,7 @@ public:
 		}
 	}
 
-	void reset()
-	{
+	void reset(){
 		dim.clear();
 		annotations.clear();
 		myfile.clear();

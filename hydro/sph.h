@@ -18,6 +18,8 @@
 
 namespace Fluid
 {
+	const bool selfneighbouring = true;
+
 	template<int d> struct m4spline
 	{
 		double operator()(double s, double h);
@@ -128,9 +130,16 @@ namespace Fluid
 		psRemoved = 1u
 	};
 	
+	struct logInfo {
+		double time;
+		vec<2> drag;
+	};
+
+
 	template<int D>
 	class SPH
 	{
+		bool verbose;
 		double gamma; // adiabatic index
 		const double G = 8 * 2;
 		double alpha; // volume viscosity
@@ -371,6 +380,8 @@ namespace Fluid
 				for (auto p2p : neigs[i])
 				{
 					const particle& p2 = *p2p.neigh;
+					if (!selfneighbouring && p1.group == p2.group && p1.group * p2.group != 0)
+						continue;
 					double dist = p2p.dist;
 					p1.density += p2.mass*kernel(dist, h);
 				}
@@ -378,6 +389,8 @@ namespace Fluid
 				for (auto p2p : neigs_mirror[i])
 				{
 					const particle& p2 = *p2p.neigh;
+					if (!selfneighbouring && p1.group == p2.group && p1.group * p2.group != 0)
+						continue;
 					p1.density += p2.mass*kernel(p2p.dist, h);
 				};
 
@@ -429,6 +442,13 @@ namespace Fluid
 			fw.finishSection(time);
 		}
 
+		
+		logInfo getLogInfo(double t) {
+			logInfo ls;
+			ls.time = t;
+			if(!solids.empty()) ls.drag = solids[0].dragForce;
+			return ls;
+		}
 
 		void partitionParticles() {
 			AutoTimer at(g_timer, "partitionParticles");
@@ -439,10 +459,11 @@ namespace Fluid
 
 	public:
 		SPH(){}
-		void init(double gamm, double alph, int leafCapacity) {
+		void init(double gamm, double alph, int leafCapacity, bool verb) {
 			gamma = gamm;
 			alpha = alph;
 			beta = 2 * alpha;
+			verbose = verb;
 
 			kdt.setPositionCB(&particle::getPos);
 			kdt.setMassCB(&particle::getMass); 
@@ -461,7 +482,7 @@ namespace Fluid
 					problemFound = true;
 				}
 			if (!problemFound)
-				std::cout << "Boundary consistency check passed!" << std::endl;
+				if (verbose) std::cout << "Boundary consistency check passed!" << std::endl;
 		}
 		void setExternalAcceleration(vec<D> ea) {
 			externalAcceleration = ea;
@@ -486,9 +507,9 @@ namespace Fluid
 			// Make sure that "removed" particles are in the end
 			partitionParticles();
 		}
-		void createSolid(std::vector<vec<2>> const& subp) {
+		void createSolid(std::vector<vec<2>> const& subp, double mass, double scale) {
 			solid so;
-			so.totalMass = .1;
+			so.totalMass = mass;
 			int gr = solids.size()+1;
 			so.group = gr;
 
@@ -498,7 +519,7 @@ namespace Fluid
 			size_t offset = particles.size();
 			particles.resize(offset + so.subpositions.size());
 			for (int i = 0; i < so.subpositions.size(); i++) {
-				particles[offset + i] = { ori + (so.subpositions[i] *0.01),{0, 0},{0, 0},
+				particles[offset + i] = { ori + (so.subpositions[i] * scale),{0, 0},{0, 0},
 					so.totalMass / so.subpositions.size(), 0, 0, 1, 0};
 				particles[offset + i].group = gr;
 				particles[offset + i].id = i;
@@ -532,19 +553,20 @@ namespace Fluid
 
 		auto& getTree() { return kdt; }
 
-		//size_t getNumParticles() { return particles.size(); }
+		size_t getNumParticles() { return nActiveParticles; }
 		size_t getNumSolids() { return solids.size(); }
 
 		template<bool GRAVITATION = false, bool ISOTHERMAL = false>
 		void simulate(StreamFileWriter& pfw, StreamFileWriter& sfw, const double simulTime,
-			const double eta, const double cfl = 1., const double logTimeStep = 0.01)
+			const double eta, const double cfl = 1., const double logTimeStep = 0.01,
+			std::function<void(logInfo const&)> drag_cb = nullptr)
 		{
 			std::ofstream etafile("etas.txt");
 
 
 			using namespace std;
 
-			cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
+			if(verbose)	cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
 
 			const double grav_angle = 0.0001;
 
@@ -567,9 +589,7 @@ namespace Fluid
 			double dt;
 			while (t < simulTime)
 			{
-				AutoTimer at(g_timer, "simulate - time step");
-
-			//	h = get_h(eta);
+				AutoTimer at(g_timer, "simulate - iteration");
 
 				// find neighbours
 				findNeighbours<GRAVITATION>(h, grav_angle, neigs, neigs_mirror, masses);
@@ -604,9 +624,9 @@ namespace Fluid
 						for (const srn& p2p : neigs[i])
 						{
 							const particle& p2 = *p2p.neigh;
+							if (!selfneighbouring && p1.group == p2.group && p1.group*p2.group!=0) continue;
 							double dist = p2p.dist;
-							if(dist>0)
-							minDistance = std::min(minDistance, dist);
+							if(dist>0) minDistance = std::min(minDistance, dist);
 							auto rij = (p1.pos - p2.pos);
 							auto vij = (p1.vel - p2.vel);
 							auto rijn = dist == 0 ? rij : rij / dist;
@@ -625,6 +645,7 @@ namespace Fluid
 						for (const srv& p2p : neigs_mirror[i])
 						{
 							const particle& p2 = *p2p.neigh;
+							if (!selfneighbouring && p1.group == p2.group && p1.group * p2.group != 0) continue;
 							auto rij = p2p.relPos * (-1);
 							auto vij = (p1.vel - p2.vel);
 							double dist = rij.length();
@@ -662,7 +683,6 @@ namespace Fluid
 					etafile << avgNumNeigh << " " << h << " " << avgMinDistance<<std::endl;
 				}
 
-				
 
 				// calculate time step
 				{
@@ -786,7 +806,7 @@ namespace Fluid
 
 				// create new particles on inflow edges			
 				int nSpawnParticles = 10;
-				double wallOffset = 0.01;
+				double wallOffset = 0.001;
 				for (int k = 0; k < D; ++k) {
 					if (boundaryTypes[k][0] == BoundaryType::inflow) {
 						size_t nMaxParticles = particles.size();
@@ -809,9 +829,11 @@ namespace Fluid
 				{
 					logParticles(pfw, t);
 					logSolids(sfw, t);
+					if (drag_cb) drag_cb(getLogInfo(t));
 				}
 				counter++;
 
+				if (verbose)
 				if (counter % 100 == 0)
 					std::cout << "step " << counter << ", t=" << t << " / " << simulTime << std::endl;
 
@@ -819,7 +841,7 @@ namespace Fluid
 				h = eta * avgMinDistance / particles.size();
 			}
 
-			cout << "Simulation finished. Timesteps: " << counter << std::endl;
+			if (verbose) cout << "Simulation finished. Timesteps: " << counter << std::endl;
 
 			etafile.close();
 		}
