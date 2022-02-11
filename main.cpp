@@ -7,9 +7,11 @@
 #include <array>
 #include <vector>
 #include <random>
+#include <set>
 
 std::vector<vec<2>> myshape;
 double myscale = 0.05;
+double solidMass = 0.2;
 
 double simulateDrag(std::vector<vec<2>> const& shape)
 {
@@ -18,21 +20,21 @@ double simulateDrag(std::vector<vec<2>> const& shape)
 
 	using namespace Fluid;
 	SPH<2> sph;
-	sph.init(1.4, 1.0, 16, false);
+	sph.init(1.4, 3.0, 16, false);
 
-	sph.setDomain({ {{0,1},{0,1}} },
+	sph.setDomain({ {{0,1},{0,0.6}} },
 		{ { {BoundaryType::inflow, BoundaryType::outflow},
 			{BoundaryType::wall, BoundaryType::wall} } });
 
 	sph.createParticles(100, 1.0);
-	sph.createSolid(shape, 0.5, myscale);
+	sph.createSolid(shape, solidMass, myscale);
 
 	StreamFileWriter pfw;
 	StreamFileWriter sfw;
 
 	int logCounter = 0;
 	double avgDrag = 0;
-	sph.simulate<false, true>(pfw, sfw, 4, 4.0, 0.8, 0.01, [&](logInfo const& li) {
+	sph.simulate<false, true>(pfw, sfw, 4, 2.0, 0.8, 0.01, [&](logInfo const& li) {
 		if (li.time > 1) {
 			logCounter++; avgDrag += li.drag.x;
 		}});
@@ -44,8 +46,8 @@ double simulateDrag(std::vector<vec<2>> const& shape)
 }
 
 struct oi {
-	float energy;
-	float nFilled;
+	double energy;
+	double nFilled;
 };
 struct optimizationInfo {
 	
@@ -65,8 +67,8 @@ struct edge {
 };
 struct boundary {
 	std::vector<edge> edges;
-	float getDistance() {
-		float dist=0;
+	double getDistance() {
+		double dist=0;
 		for (auto const& e:edges)
 			dist += sqrt(pow(e.a.x - e.b.x, 2) + pow(e.a.y - e.b.y, 2));
 		return dist;
@@ -80,6 +82,8 @@ struct boundary {
 class scene {
 	int w, h;// width and height
 	std::vector<std::vector<bool>> dataset;
+	std::set<std::pair<int, int>> filleds, emptys;
+
 	mutable std::random_device rd;
 
 	bool isBoundary(int x, int y) { // between filled and empty
@@ -89,8 +93,96 @@ class scene {
 			|| (dataset[y][x] != dataset[y + 1][x]);
 	}
 
+	std::mt19937 gen;
+	std::uniform_int_distribution<> uid, uid2;
+	std::uniform_real_distribution<> urd;
+
+	bool isConnected() {
+		std::vector<std::vector<bool>> visited;
+		visited.resize(h);
+		for (int y = 0; y < h; ++y) {
+			visited[y].resize(w,false);
+		}
+		
+		std::queue<std::pair<int, int>> toSpread;
+
+		// find some filled cell
+		for (int y = 0; y < h; ++y) {
+			for (int x = 0; x < w; ++x) {
+				if (dataset[y][x]) {
+					visited[y][x] = true;
+					toSpread.push({x,y});
+					goto breakout;
+				}
+			}
+		}
+	breakout:
+
+		// propagate the "visited" status to neighbouring cells
+		while (!toSpread.empty()) {
+			auto[x,y] = toSpread.front();
+			toSpread.pop();
+
+			if (dataset[y - 1][x] && !visited[y - 1][x]) {
+				visited[y - 1][x] = true;
+				toSpread.push({ x,y-1 });
+			}
+			if (dataset[y + 1][x] && !visited[y + 1][x]) {
+				visited[y + 1][x] = true;
+				toSpread.push({ x,y + 1 });
+			}
+			if (dataset[y][x - 1] && !visited[y][x - 1]) {
+				visited[y][x - 1] = true;
+				toSpread.push({ x - 1,y });
+			}
+			if (dataset[y][x + 1] && !visited[y][x + 1]) {
+				visited[y][x + 1] = true;
+				toSpread.push({ x + 1,y });
+			}
+		}
+
+
+		// check if there are filled cells that are not visited
+		for (int y = 0; y < h; ++y) {
+			for (int x = 0; x < w; ++x) {
+				if (dataset[y][x] && !visited[y][x]) {
+					return false;
+				}	
+			}
+		}
+		return true;
+	}
+
+	void fillCell(int x, int y) {
+		dataset[y][x] = true;
+		filleds.insert({ x,y });
+		emptys.erase({ x,y });
+	}
+	void emptyCell(int x, int y) {
+		dataset[y][x] = false;
+		emptys.insert({ x,y });
+		filleds.erase({ x,y });
+	}
+
+	void log(StreamFileWriter& sfw, StreamFileWriter& sfw2, int i) {
+		// Write to files
+		auto sh = getShape(false);
+		sfw2.writeBlocks(sh);
+		sfw2.finishSection(i);
+
+		boundary b = generateBoundary();
+		sfw.writeBlocks(b.edges);
+		sfw.finishSection(i);
+	}
+
 public:
 	void init(int w, int h) {
+		gen.seed(324);// rd()); // seed
+
+		uid = std::uniform_int_distribution<>(0, (w - 2) * (h - 2) - 1);
+		urd = std::uniform_real_distribution<>(0, 1);
+		uid2 = std::uniform_int_distribution<>(0, 999999);
+
 		this->w = w; this->h = h;
 
 		// initialize randomly
@@ -101,14 +193,13 @@ public:
 		for (int y = 0; y < h; ++y) {
 			dataset[y].resize(w);
 			for (int x = 0; x < w; ++x) {
-				dataset[y][x] = false;// (bool)distrib(gen);
-
+				
 				// place a square in the center
 				if (abs(x - w / 2) < 3 && abs(y - h / 2) < 3)
-					dataset[y][x] = true;
-
-				if (x * y == 0 || x == w - 1 || y == h - 1)
-					dataset[y][x] = false;
+					fillCell(x,y);
+				else if (x * y == 0 || x == w - 1 || y == h - 1)
+					dataset[y][x] = false; // dont write into empties
+				else emptyCell(x, y);
 			}
 		}
 	}
@@ -149,8 +240,8 @@ public:
 		return bd;
 	}
 
-	float getVolume() {
-		float vol=0;
+	double getVolume() {
+		double vol=0;
 		for (int y = 0; y < h; ++y) {
 			for (int x = 0; x < w; ++x) {
 				vol += dataset[y][x];
@@ -158,57 +249,101 @@ public:
 		}
 		return vol;
 	}
-	float getEnergy() { // The quantity to minimize
-		float targetVolume = 30;
-		float targetVolumeTolerance = 2;
+	double getEnergy() { // The quantity to minimize
+		double targetVolume = 25;
+		double targetVolumeTolerance = 2;
 
 
-		float deviation = std::max(0.f, abs(getVolume() - targetVolume) - targetVolumeTolerance);
+		double deviation = std::max(0., abs(getVolume() - targetVolume) - targetVolumeTolerance);
 
 		return simulateDrag(getShape()) * (1 + deviation * 0.1);
 		//return generateBoundary().getDistance()/getVolume() *(1+abs(getVolume()-100)*0.01);
 	}
 
-	void optimize(int nIterations, float temperature, bool onlyBoundary, optimizationInfo& out_info) {
-		// Use Monte-Carlo
-		AutoTimer at(g_timer, "optimize"); 
+	void findCell(int& x,int& y, bool filled, bool onlyBoundary) {
 		
+		if (filled) {
+			auto it = std::begin(filleds);
+			std::advance(it, uid2(gen) % filleds.size());
+			std::tie(x, y) = *it;
+		}
+		else {
+			auto it = std::begin(emptys);
+			std::advance(it, uid2(gen) % emptys.size());
+			std::tie(x, y) = *it;
+		}
 
-		std::mt19937 gen(rd()); // seed
-		std::uniform_int_distribution<> uid(0, (w-2) * (h-2) - 1);
-		std::uniform_real_distribution<> urd(0, 1);
-
-		float oldEnergy = getEnergy();
-		for (int i = 0; i < nIterations; ++i) {
-			int idx = uid(gen); // pick one element
-			int y = idx / (w-2) + 1, x = idx % (w-2) + 1;
-
-			if (onlyBoundary && !isBoundary(x, y)) {
-				i--;
-				continue;
-			}
-
-			dataset[y][x] = (dataset[y][x] != true); // flip it
-			float newEnergy = getEnergy(); // compute new energy
-			float deltaEnergy = newEnergy - oldEnergy;
-			float prop = std::min(1.f, exp(-deltaEnergy / temperature));
-			if (urd(gen) < prop) { // accepted
-				oldEnergy = newEnergy;
-				std::cout << "accept";
-			}
-			else { // rejected
-				dataset[y][x] = (dataset[y][x] != true); // flip it back
-			}
-			out_info.infos.push_back({ oldEnergy,getVolume() });
+		if (onlyBoundary)
+		while (!isBoundary(x, y)) {
+			findCell(x, y, filled, false);
 		}
 	}
 
-	std::vector<vec<2>> getShape() {
+	void optimize(StreamFileWriter& sfw, StreamFileWriter& sfw2, int nIterations, double temperature, bool onlyBoundary, optimizationInfo& out_info) {
+		// Use Monte-Carlo
+		AutoTimer at(g_timer, "optimize"); 
+		
+		int x0, y0, x1, y1;
+		int accCounter = 0;
+
+		log(sfw, sfw2,0);
+
+		double oldEnergy = getEnergy(), newEnergy;
+		for (int i = 0; i < nIterations; ++i) {
+		
+			findCell(x0, y0, true, onlyBoundary);
+			findCell(x1, y1, false, onlyBoundary);
+
+			// move the filling
+			emptyCell(x0, y0);
+			fillCell(x1, y1);
+
+			//std::cout << "Propose: " << x0 << " " << y0 << " -> " << x1 << " " << y1 << std::endl;
+
+			bool accepted = false;
+			if (isConnected()) {
+				newEnergy = getEnergy(); // compute new energy
+				double deltaEnergy = newEnergy - oldEnergy;
+				double prop = std::min(1., exp(-deltaEnergy / temperature));
+				accepted = urd(gen) < prop;
+			}
+			else {
+			/*	std::cout << "Propose: " << x0 << " " << y0 << " -> " << x1 << " " << y1 << std::endl;
+
+				std::cout << "would disconnect" << std::endl; */
+
+				emptyCell(x1, y1);
+				fillCell(x0, y0);
+
+				i--;
+				continue;
+			}
+			if (accepted) {
+				oldEnergy = newEnergy;
+				std::cout << "Accepted!" <<std::endl;
+				accCounter++;
+			}
+			else { // rejected: move it back
+				emptyCell(x1, y1);
+				fillCell(x0, y0);
+			}
+			out_info.infos.push_back({ oldEnergy,getVolume() });
+
+
+			// write the state to files
+			log(sfw, sfw2, i+1);
+			
+
+			//if (accCounter == 15) break;
+		}
+	}
+
+	std::vector<vec<2>> getShape(bool center = true) {
 		std::vector<vec<2>> shape;
 		for (int y = 0; y < h; ++y) {
 			for (int x = 0; x < w; ++x) {
 				if(dataset[y][x])
-					shape.push_back({ (double)x - (double)w / 2,(double)y - (double)h / 2 });
+					shape.push_back({ (double)x - (double)w / 2* center,(double)y - (double)h / 2* center });
 			}
 		}
 		return shape;
@@ -231,12 +366,12 @@ void windchannel()
 {
 	using namespace Fluid;
 	SPH<2> sph;
-	sph.init(1.4, 1.0, 16, true); // dry air, 0 degree Celsius, normal pressure
+	sph.init(1.4, 3.0, 16, true); // dry air, 0 degree Celsius, normal pressure
 	
 	// No velocity field. Only 'pumping' the particles from the right boundary to the left,
 	// creating a pressure gradient.
 
-	sph.setDomain({ {{0,1},{0,1}} },
+	sph.setDomain({ {{0,1},{0,.6}} },
 		{ { {BoundaryType::inflow, BoundaryType::outflow},
 			{BoundaryType::wall, BoundaryType::wall} } });
 
@@ -249,8 +384,8 @@ void windchannel()
 	std::vector<vec<2>> wing = { {-20, 3},{-15, 5},{-10, 5},{-5, 3},{0, 0},{5, -5} };
 	std::vector<vec<2>> torpedo = { {-7, -12}, { -2,-9 }, { 0,-5 }, { 0,0 }, { 0,5 }, { -2,9 }, { -7,12 } };
 
-	sph.createParticles(1000, 1.0);
-	sph.createSolid(myshape,0.5, myscale);
+	sph.createParticles(100, 1.0);
+	sph.createSolid(myshape, solidMass, myscale);
 
 
 	StreamFileWriter pfw;
@@ -261,7 +396,7 @@ void windchannel()
 	sfw.setBlockShape({ fileSolidData<2>::numElements() });
 	sfw.open("solids.binary");
 
-	sph.simulate<false, true>(pfw, sfw, 4, 4.0, 0.8, 0.005);
+	sph.simulate<false, true>(pfw, sfw, 4, 2.0, 0.8, 0.005);
 
 
 
@@ -279,30 +414,32 @@ int main(){
 	std::cout << "Max number of OMP threads: " << omp_get_max_threads() << std::endl;
 
 	// --------------------------------------------
+	size_t w = 20, h = 20;
 
 	scene sc;
-	sc.init(20, 20);
+	sc.init(w,h);
 	std::ofstream file;
 
+	StreamFileWriter sfw;
+	sfw.setBlockShape({ 2,2 });
+	sfw.open("output-boundary.binary");
+
+	StreamFileWriter sfw2;
+	sfw2.setBlockShape({ 2 });
+	sfw2.open("output-filling.binary");
+
 	optimizationInfo oi;
-	sc.optimize(20, 0.005, true, oi);
+	sc.optimize(sfw, sfw2, 1000, 0.004, true, oi);
 
 	file.open("output-info.txt");
 	file << oi;
 	file.close();
 
-	
-	file.open("output-raw.txt");
-	file << sc;
-	file.close();
 
+	sfw.close();
+	sfw2.close();
 
-	boundary b = sc.generateBoundary();
 	myshape = sc.getShape();
-
-	file.open("output-boundary.txt");
-	file << b;
-	file.close();
 
 	// --------------------------------------------
 	

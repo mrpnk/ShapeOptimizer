@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <assert.h>
 #include <execution>
+#include <random>
 
 #include <omp.h>
 
@@ -456,10 +457,14 @@ namespace Fluid
 			nActiveParticles = std::partition(particles.begin(), particles.end(), [](particle const& p) {return !(p.state & psRemoved); }) - particles.begin();
 		}
 
+		std::mt19937 gen;
+		std::uniform_real_distribution<> urds[D];
 
 	public:
-		SPH(){}
+		SPH(){	}
 		void init(double gamm, double alph, int leafCapacity, bool verb) {
+			gen.seed(); 
+			
 			gamma = gamm;
 			alpha = alph;
 			beta = 2 * alpha;
@@ -483,6 +488,10 @@ namespace Fluid
 				}
 			if (!problemFound)
 				if (verbose) std::cout << "Boundary consistency check passed!" << std::endl;
+
+			for (int d = 0; d < D; ++d) {
+				urds[d] = std::uniform_real_distribution<>(domain[d][0], domain[d][1]);
+			}
 		}
 		void setExternalAcceleration(vec<D> ea) {
 			externalAcceleration = ea;
@@ -499,9 +508,7 @@ namespace Fluid
 			size_t offset = particles.size();
 			particles.resize(offset+numParticles);
 			for (int i = 0; i < numParticles; i++){
-				auto x = ((rand() % 10000) / 10000.0);
-				auto y = ((rand() % 10000) / 10000.0);
-				particles[offset + i] = { { x, y },{ 0, 0 },{ 0, 0 }, totalMass / numParticles, 0, 0, 1, 0 };
+				particles[offset + i] = { { urds[0](gen), urds[1](gen)},{0, 0},{0, 0}, totalMass / numParticles, 0, 0, 1, 0};
 			}
 
 			// Make sure that "removed" particles are in the end
@@ -513,7 +520,7 @@ namespace Fluid
 			int gr = solids.size()+1;
 			so.group = gr;
 
-			vec<2> ori = { 0.5,0.5 };
+			vec<2> ori = vec<2>{ domain[0][0] + domain[0][1], domain[1][0] + domain[1][1] }/2.;
 			so.subpositions = subp;
 			
 			size_t offset = particles.size();
@@ -563,11 +570,8 @@ namespace Fluid
 		{
 			std::ofstream etafile("etas.txt");
 
-
 			using namespace std;
-
 			if(verbose)	cout << "Parameters: N = " << particles.size() << ", T = " << simulTime << ", eta = " << eta << ", cfl = " << cfl << std::endl;
-
 			const double grav_angle = 0.0001;
 
 			double t = 0;
@@ -807,13 +811,13 @@ namespace Fluid
 				// create new particles on inflow edges			
 				int nSpawnParticles = 10;
 				double wallOffset = 0.001;
-				for (int k = 0; k < D; ++k) {
-					if (boundaryTypes[k][0] == BoundaryType::inflow) {
+				for (int d = 0; d < D; ++d) {
+					if (boundaryTypes[d][0] == BoundaryType::inflow) {
 						size_t nMaxParticles = particles.size();
 						if (nMaxParticles - nActiveParticles >= nSpawnParticles) {
 							for (int i = nActiveParticles; i < nActiveParticles+nSpawnParticles; i++) {				
-								particles[i].pos[k] = domain[k][0] + wallOffset;
-								particles[i].pos[1 - k] = domain[1 - k][0] + ((rand() % 10000) / 10000.0) * (domain[1 - k][1] - domain[1 - k][0]);
+								particles[i].pos[d] = domain[d][0] + wallOffset;
+								particles[i].pos[1 - d] = urds[1-d](gen);
 								particles[i].vel = { 0,0 };
 								particles[i].state &= (~psRemoved);
 							}
