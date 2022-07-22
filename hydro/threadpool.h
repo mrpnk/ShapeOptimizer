@@ -1,5 +1,5 @@
 #pragma once
-
+// from http://roar11.com/2016/01/a-platform-independent-thread-pool-using-c14/
 
 #include <atomic>
 #include <condition_variable>
